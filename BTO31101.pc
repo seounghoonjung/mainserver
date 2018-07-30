@@ -1,14 +1,5 @@
 /*
- * 설명   : 선물/옵션 주문
- * NAME   : BTO31101.pc
- * DATE   : 2004년 3월 29일 월요일 오후 07시 25분 18초
- * By     : [아이티캐슬] 
- * Remark : 
- * 2006.01.23 백두현, 주문접수 Return 시 Client전송 KEY를 추가
- * 2007.05.21 정승훈, 제도통합 관련 수정완료
- *            1) Packet Header에 있는 매체구분사용 대신 Data Header 매체 사용
- *            2) 기존 KOFEX 로직 제거
- * 2009.03.02 차세대관련 로직 점검 완료
+
  */
 #include <stdio.h>
 #include <stdlib.h>
