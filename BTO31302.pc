@@ -1,0 +1,497 @@
+/*
+ * 설명   : 복수계좌그룹 일괄취소주문
+ * NAME   : BTO31302.pc
+ * DATE   : 2004년 6월  7일 월요일 오후 03시 03분 34초
+ * By     : [이름쓰기] 
+ * Remark : 
+ * 2006.01.23 백두현, 주문접수 Return 시 Client전송 KEY를 추가
+ * 2007.05.22 정승훈, 제도통합 관련 수정완료
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <math.h>
+#include "lgf2control.h"
+#include "exdcommon.h"
+
+#include "bttrio.h"
+#include "misexec.h"
+
+EXEC SQL INCLUDE SQLCA;
+
+/*--------------- External ---------------------*/
+extern char  trddt[9];
+
+/*--------------- Internal ---------------------*/
+char       *qodnm31302 = "BTO31302";
+
+/*******************************************************************************
+ * 설명      : 그룹주문 Packet 을 일반주문건별로 변환한다 
+ * Prototype :  GRPORD_TRSM   grpin;	그룹주문 입력 Data
+				ORDER_TRSMBK *inbk;		개별주문건으로 나열된 Buff
+				char         *msgcd;	에러코드
+				char         *msg;		에러메세지
+ * Arguments :
+ * Return    :
+ ******************************************************************************/
+int BTO31302GrpToInbk(grpin, ordinputid, ordinputip, oppsnempno,
+					  inbk, msgcd, msg)
+PLRACNTORD_TRSM grpin;		/* 그룹주문 입력 Data         I*/
+char           *ordinputid;	/* 입력사용자 ID              I*/
+char           *ordinputip;	/* 입력사용자 IP              I*/
+char           *oppsnempno;	/* 조작사번                   I*/
+ORDER_TRSMBK   *inbk;		/* 개별주문건으로 나열된 Buff O*/
+char           *msgcd;		/* 에러코드                   O*/
+char           *msg;		/* 에러메세지                 O*/
+{
+	char  *fname = "BTO31302GrpToInbk";
+	char   grpnm [31];
+	char   inpswd[33]={0,};
+	char   pswd  [9]={0,};
+	char   tmp   [50];
+	int    ingrpid;		/* 입력 그룹 ID */
+	double orgnordpx;
+	double dealmltp;
+    char   price[11+1];
+    char   intlstdcd[12+1];
+    char   macaddr[12+1];
+
+	ORDER_TRSMBK src;
+	int   cnt;			/* 잔량 주문 건수 */
+
+
+    memset(grpnm , 0x00 , sizeof(grpnm));
+    memset(tmp , 0x00 , sizeof(tmp));
+    memset(price , 0x00 , sizeof(price));
+    memset(intlstdcd , 0x00 , sizeof(intlstdcd));
+    memset(pswd , 0x00 , sizeof(pswd));
+    memset(macaddr , 0x00 , sizeof(macaddr));
+
+	sprintf(grpnm, "%.30s", grpin.ordin.grpnm);
+	ingrpid = Str2Int(grpin.ordin.grpid,  3);
+
+    EXEC SQL
+    SELECT MacAddr
+    INTO  :macaddr
+    FROM  BA99_UserIdMACAddr
+    WHERE userid     = rtrim(:ordinputid)
+    AND   UserIPAddr = rtrim(:ordinputip)
+    AND   RowNum = 1;
+
+    if (sqlca.sqlcode != 0) {
+
+        if(sqlca.sqlcode == 1403)
+            Logout("[%s] Mac Addr 내역이 없습니다.[%s][%s]", fname, ordinputid,ordinputip);
+        else
+            Logout("[%s] mac addr 조회 오류[%s]", fname, sqlca.sqlerrm.sqlerrmc);
+
+            memcpy(macaddr   , "000000000000" , 12);
+    }
+
+    sprintf(src.macaddr,      "%.12s", macaddr);
+
+
+	EXEC SQL DECLARE BTO31302_GRPORD_CUR CURSOR FOR
+	SELECT	A.BrkgAcntNo          ,		/* 위탁계좌번호       */
+			A.FundMngrNo          ,		/* 딜러번호           */
+			A.CustNo              ,		/* 고객번호           */
+			A.AcntDiv     		  ,		/* 계좌구분           */
+			F_MAP_OBJECT(C.Pswd)  ,		/* 비밀번호           */
+			A.CmdtCd              ,		/* 거래대상코드       */
+			A.InstGrpCd           ,		/* 파생상품코드       */
+			A.ComboDiv            ,		/* 정형복합구분       */
+			A.Series              ,		/* 종목코드           */
+			A.TrdDiv              ,		/* 매매구분           */
+			A.OrdTyp              ,     /* 주문유형           */
+			A.OrdQty - A.ExecQty - A.CrrtQty - A.CxlQty - A.CrrtCxlRejQty,
+										/* 주문수량 : 잔량    */
+			A.OrdPx 			  ,		/* 주문단가           */
+			A.ExecQtyDiv          ,		/* 체결수량구분       */
+			A.PaOrdNo             ,		/* 모주문번호         */
+			A.OrdNo               ,		/* 주문번호           */
+			0                     ,		/* 그룹ID             */
+			A.TickGap             ,		/* Tick간격           */
+			A.BrchNo              ,		/* 지점번호           */
+			A.ExAcptNo            ,		/* 거래소접수번호     */
+			NVL(A.FixYN, 'N')     ,		/* Fix여부     */
+			DECODE(B.DealUnitDcmPntInf,0, DECODE(SIGN(0), -1,
+									 SUBSTR(TO_CHAR(0, 'S0999999999'),1,11) ,
+									 SUBSTR(TO_CHAR(0, '09999999999'),2,11)) ,
+						   2, DECODE(SIGN(0), -1,
+									 SUBSTR(TO_CHAR(0, 'S0999999.99'),1,11) ,
+									 SUBSTR(TO_CHAR(0, '09999999.99'),2,11))),
+			D.DealMltp,
+            D.intlstdcd
+	FROM	BT01_Ord             A,
+			BA13_BrkgAcntMst     C,
+			BZ58_SeriesMst       D,
+            BZ55_InstGrpBscInf    B
+	WHERE	A.BizDt     = :trddt
+	AND		A.GrpNm     = :grpnm
+	AND		A.GrpId     = :ingrpid
+	AND		A.OrdQty - A.ExecQty - A.CrrtQty - A.CxlQty - A.CrrtCxlRejQty > 0
+	AND		A.OrdStts  != '9' -- 거부제외
+	AND		A.OrdDiv   != '3' -- 취소제외
+	AND		C.BrkgAcntNo= A.BrkgAcntNo
+    AND     B.CmdtCd    = D.CmdtCd
+    AND     D.InstGrpCd = B.InstGrpCd
+	AND		D.Series    = A.Series;
+
+	EXEC SQL OPEN BTO31302_GRPORD_CUR;
+
+	if (sqlca.sqlcode != 0) {
+		Logout("[%s] 그룹주문내역 조회 Cursor Open 오류[%s]",
+			fname, sqlca.sqlerrm.sqlerrmc);
+		sprintf(msgcd, "ERROR");
+		sprintf(msg,   "그룹주문내역 조회시 오류가 발생하였습니다");
+		return -1;
+	}
+
+	for(cnt = 0; ; cnt++) {
+		EXEC SQL FETCH BTO31302_GRPORD_CUR
+		INTO	:src.brkgacntno  ,		/* 위탁계좌번호       */
+				:src.dealerno    ,		/* 딜러번호           */
+				:src.custno      ,		/* 고객번호           */
+				:src.acntdiv     ,		/* 계좌구분           */
+				:pswd            ,		/* 비밀번호           */
+				:src.cmdtcd      ,		/* 거래대상코드       */
+				:src.instgrpcd   ,		/* 파생상품코드       */
+				:src.combodiv    ,		/* 정형복합구분       */
+				:src.series      ,		/* 종목코드           */
+				:src.trddiv      ,		/* 매매구분           */
+				:src.ordtyp      ,		/* 주문유형           */
+				:src.ordqty      ,		/* 주문수량 : 잔량    */
+				:orgnordpx       ,		/* 주문단가           */
+				:src.execqtydiv  ,		/* 체결수량구분       */
+				:src.paordno     ,		/* 모주문번호         */
+				:src.orgnordno   ,		/* 원주문번호         */
+				:src.grpid       ,		/* 그룹ID             */
+				:src.tickgap     ,		/* Tick간격           */
+				:src.brchno      ,		/* 지점번호           */
+				:src.exorgnacptno,		/* 거래소원접수번호   */
+				:src.fixyn       ,		/* Fix여부   */
+                :price           ,
+				:dealmltp        ,
+                :intlstdcd;
+
+		if (sqlca.sqlcode != 0) break;
+
+		if(cnt + 1 > MAX_ORDCNT) {
+			Logout("[%s] 해당내역이 최대주문정송 건을 초과하였습니다.", fname);
+			sprintf(msgcd, "50624");
+			sprintf(msg,   "정정대상 내역 한도초과, 일부처리를 하세요.");
+			EXEC SQL CLOSE BTO31302_GRPORD_CUR;
+			return -1;
+		}
+
+		/* 개별건 주문의 설정 */
+		sprintf(inbk[cnt].meddiv,    "%.1s",  grpin.ordhd.meddiv);
+		sprintf(inbk[cnt].orddiv,    "%.1s",  grpin.ordhd.orddiv);
+		sprintf(inbk[cnt].ordfrm,    "%.1s",  grpin.ordhd.ordfrm);
+		sprintf(inbk[cnt].dealdiv,   "%.1s",  grpin.ordhd.dealdiv);
+
+		sprintf(inbk[cnt].brkgacntno,"%.6s",  src.brkgacntno);
+		sprintf(inbk[cnt].dealerno,  "%.3s",  src.dealerno);
+
+		sprintf(inbk[cnt].pswd,      "%.8s",  pswd);
+		sprintf(inbk[cnt].cmdtcd,    "%.2s",  src.cmdtcd); 
+        sprintf(inbk[cnt].instgrpcd, "%.3s",  src.instgrpcd);
+		sprintf(inbk[cnt].combodiv,  "%.1s",  src.combodiv);
+		sprintf(inbk[cnt].series,    "%.32s", src.series);
+		sprintf(inbk[cnt].trddiv,    "%.1s",  src.trddiv);
+		sprintf(inbk[cnt].ordtyp,    "%.1s",  src.ordtyp);
+		inbk[cnt].ordqty = src.ordqty;
+		sprintf(inbk[cnt].execqtydiv,"%.1s",  src.execqtydiv);
+		inbk[cnt].paordno   = src.paordno;
+		inbk[cnt].orgnordno = src.orgnordno;
+		sprintf (inbk[cnt].grpnm,    "%.30s", grpin.ordhd.grpnm);
+		inbk[cnt].grpid     = src.grpid;
+		inbk[cnt].wtordseqno= 0;
+		inbk[cnt].ordcnt    = 0;
+		inbk[cnt].ocoseqno  = 0;
+		inbk[cnt].tickgap   = src.tickgap;
+
+		sprintf(inbk[cnt].trddt,       "%.8s", trddt);
+        memcpy(inbk[cnt].ordbk,          price,     11);
+		sprintf(inbk[cnt].brchno,      "%.3s", src.brchno);
+		sprintf(inbk[cnt].custno,      "%.6s", src.custno);
+		sprintf(inbk[cnt].acntdiv,     "%.1s", src.acntdiv);
+        memcpy(inbk[cnt].intlstdcd,    intlstdcd,  12);
+		memcpy(inbk[cnt].invtpsndiv,  "    ", sizeof(src.invtpsndiv));
+		memcpy(inbk[cnt].natlcntycd,  "   ",  sizeof(src.natlcntycd));
+		sprintf(inbk[cnt].exorgnacptno,"%.16s",src.exorgnacptno);
+		StrTrim (tmp, ordinputid, strlen(ordinputid));
+		sprintf (inbk[cnt].ordinputid, "%.*s", strlen(tmp), tmp);/* 입력 ID*/
+		StrTrim (tmp, ordinputip, strlen(ordinputip));
+		sprintf (inbk[cnt].ordinputip, "%.*s", strlen(tmp), tmp);/* 입력 IP*/
+		sprintf (inbk[cnt].oppsnempno, "%.8s", oppsnempno);      /* 조작사번*/
+		sprintf(inbk[cnt].fixyn,       "%.1s", src.fixyn);
+		sprintf(inbk[cnt].macaddr,     "%.12s", src.macaddr);
+
+		if (memcmp(inbk[cnt].cmdtcd, "60", 2) == 0 ) {
+			inbk[cnt].orgnordamt = (500000000 -
+							       (500000000 * orgnordpx / 400)) *
+						           inbk[cnt].ordqty;
+		}
+		else {
+			inbk[cnt].orgnordamt = inbk[cnt].ordqty * orgnordpx * dealmltp;
+		}
+		inbk[cnt].orgnordqty = src.ordqty;
+	}
+
+	if (sqlca.sqlcode != 0 && sqlca.sqlcode != 1403) {
+		Logout("[%s] 복수계좌그룹주문내역 Fetch 오류[%s]",
+			fname, sqlca.sqlerrm.sqlerrmc);
+		sprintf(msgcd, "99999");
+		sprintf(msg,   "복수계좌그룹주문내역 조회시 오류가 발생하였습니다");
+
+		EXEC SQL CLOSE BTO31302_GRPORD_CUR;
+		return -1;
+	}
+	else if(cnt == 0) {
+		sprintf(msgcd, "50630");
+		sprintf(msg,   "취소대상 내역이 없습니다");
+		Logout("[%s] 취소대상 내역이 없습니다", fname);
+		EXEC SQL CLOSE BTO31302_GRPORD_CUR;
+		return -1;
+	}
+
+#ifdef _DEBUG
+	Logout("[%s] 복수계좌그룹 취소 대상 건수 = %d", fname, cnt);
+#endif
+
+	inbk[0].ordcnt = cnt;
+
+	EXEC SQL CLOSE BTO31302_GRPORD_CUR;
+
+	if (sqlca.sqlcode != 0) {
+		Logout("[%s] 복수계좌그룹주문내역 조회 Cursor Close 오류[%s]",
+			fname, sqlca.sqlerrm.sqlerrmc);
+		sprintf(msgcd, "99999");
+		sprintf(msg,   "복수계좌그룹주문내역 조회시 오류가 발생하였습니다");
+		return -1;
+	}
+
+#ifdef _DEBUG
+	Logout("[%s] 복수계좌그룹 기본정보 조회 완료...", fname);
+#endif
+
+	return 1;
+}
+
+/*******************************************************************************
+ * 설명      : 복수계좌그룹 일괄취소주문
+ * Prototype :
+ * Arguments :
+ * Return    :
+ ******************************************************************************/
+int BTO31302(int fd, void *arg, int len)
+{
+	PACKET_HD       *hd;
+	ORDER_IN_HD     *ordhd;
+	PLRACNTORD_TRSM *grpin;
+	ORDER_TRSMBK     inbk[MAX_ORDCNT];
+	OUT_MSG          out;
+    MIS_EXEC_DATA    misdata;
+	char             ordinputid [9];
+	char             ordinputip [16];
+	char             oppsnempno [9];
+
+	char grpnm    [31];
+	char grppswd  [9];
+	char brkgacntno[7];     /* 위탁계좌번호 */
+	char trddiv   [2];      /* 매매구분       */
+	int  ordqty;            /* 주문수량       */
+
+	char meddiv  [2];		/* 매체구분 */
+	char msgcd   [6];
+	char msg     [257];
+	char sendbuff[4096];
+	int  ordcnt, proccnt = 0;
+	int  flag = 1;
+	int  i, pos, rtn;
+
+	/*----------------------------------------------------------------------*/
+	/* 1. Initial Process                                                   */
+	/*----------------------------------------------------------------------*/
+	hd    = (PACKET_HD *)arg;
+	ordhd = (ORDER_IN_HD *)((char *)arg+sizeof(PACKET_HD));
+	grpin = (PLRACNTORD_TRSM *)((char *)arg+sizeof(PACKET_HD));
+	memset((char *)&out, 0x20, sizeof(OUT_MSG));
+
+	pos   = sizeof(PACKET_HD) + sizeof(PLRACNTORD_TRSM);
+
+	Logout("[%s] RCV HD  [%.34s]", qodnm31302, (char *)arg+14);
+	Logout("[%s] RCV DATA[%.*s]",  qodnm31302, len, grpin);
+#ifdef _DEBUG
+	Logout("[%s] input hd   method   [%.1s]", qodnm31302, hd->method);
+	Logout("[%s] input hd   UserID   [%.8s]", qodnm31302, hd->id);
+	Logout("[%s] input hd   UserIP   [%.15s]",qodnm31302, hd->ipaddr);
+	Logout("[%s] input dhd  주문건수 [%.3s]", qodnm31302, grpin->ordhd.ordcnt);
+	Logout("[%s] input dhd  매체구분 [%.1s]", qodnm31302, grpin->ordhd.meddiv);
+	Logout("[%s] input dhd  주문구분 [%.1s]", qodnm31302, grpin->ordhd.orddiv);
+	Logout("[%s] input dhd  주문형태 [%.1s]", qodnm31302, grpin->ordhd.ordfrm);
+	Logout("[%s] input dhd  거래구분 [%.1s]", qodnm31302, grpin->ordhd.dealdiv);
+	Logout("[%s] input data 그룹명   [%.30s]",qodnm31302, grpin->ordin.grpnm);
+	Logout("[%s] input data 종목코드 [%.32s]",qodnm31302, grpin->ordin.series);
+	Logout("[%s] input data 그룹ID   [%.3s]", qodnm31302, grpin->ordin.grpid);
+	Logout("[%s] input data 주문단가 [%.9s]", qodnm31302, grpin->ordin.ordpx);
+	Logout("[%s] input data 주문유형 [%.1s]", qodnm31302, grpin->ordin.ordtyp);
+#endif
+
+	sprintf(meddiv, "%.1s", grpin->ordhd.meddiv);
+
+	/* ID, IP, 사번은 반복에 관계없이 여기서 한번만 설정 */
+	sprintf(ordinputid, "%.8s",  hd->id);
+	sprintf(ordinputip, "%.15s", hd->ipaddr);
+	sprintf(oppsnempno, "%.8s",  hd->empno);
+	sprintf(grpnm,  "%.30s", grpin->ordhd.grpnm);
+	sprintf(grppswd,"%.8s",  grpin->ordhd.grppswd);
+
+	/* 복수계좌주문 그룹비밀번호 Check */
+	if (ChkPlrAcntGrpPswd(
+					ordinputid,     /* USER ID             I*/
+					grpnm,          /* 그룹명              I*/
+					grppswd,        /* 그룹ID              I*/
+					msgcd,          /* 에러코드            O*/
+					msg             /* 에러메세지          O*/
+					) < 0) {
+		Logout("[%s] msgcd[%s] msg[%s]", qodnm31302, msgcd, msg);
+
+		OrdMsgProc(msg, msgcd, meddiv, &out);
+		Logout("[%s] output[%.*s]", qodnm31302, sizeof(OUT_MSG), out);
+		flag = 0;
+
+		*hd->flag = ERRORSET_FG;
+		PlrAcntOrdErrProc((char *)arg, len, (char *)&out);
+		EXEC SQL COMMIT WORK;
+	}
+
+	/*----------------------------------------------------------------------*/
+	/* 2. 그룹내역 읽어 주문 Packet 구성                                    */
+	/*----------------------------------------------------------------------*/
+	if (flag == 1) {
+		if (BTO31302GrpToInbk(	grpin,		/* 그룹주문 입력 Data         I*/
+								ordinputid,	/* 입력사용자ID               I*/
+								ordinputip,	/* 입력사용자IP               I*/
+								oppsnempno,	/* 조작사번                   I*/
+								inbk,		/* 개별주문건으로 나열된 Buff O*/
+								msgcd,		/* 에러코드                   O*/
+								msg			/* 에러메세지                 O*/
+					  ) < 0) {
+			Logout("[%s] msgcd[%s] msg[%s]", qodnm31302, msgcd, msg);
+
+			OrdMsgProc(msg, msgcd, meddiv, &out);
+			Logout("[%s] output[%.*s]", qodnm31302, sizeof(OUT_MSG), out);
+			flag = 0;
+
+			*hd->flag = ERRORSET_FG;
+			PlrAcntOrdErrProc((char *)arg, len, (char *)&out);
+			EXEC SQL COMMIT WORK;
+		}
+	}
+	ordcnt = inbk[0].ordcnt;
+
+	for (i = 0; i < ordcnt && flag == 1; i++) {
+		/*------------------------------------------------------------------*/
+		/* 2. Data Process                                                  */
+		/*------------------------------------------------------------------*/
+		if ((rtn = CxlOrdProc(inbk[i], &out)) < 0) {
+			EXEC SQL ROLLBACK WORK;
+			OrdErrProc((char *)arg, len, (char *)&inbk[i], (char *)&out, i+1);
+			EXEC SQL COMMIT WORK;
+		}
+		else {
+			EXEC SQL COMMIT WORK;
+			proccnt++;
+		}
+
+		if (rtn > 0) {
+			sprintf(brkgacntno,"%.6s", inbk[i].brkgacntno);
+			sprintf(trddiv,    "%.1s", inbk[i].trddiv);
+			ordqty = inbk[i].ordqty;
+
+			/* 취소주문수량 만큼 주문누적수량을 뺀다 */
+			if (UpdatePlrAcntOrdQty(ordinputid,     /* User ID        I*/
+									grpnm,          /* 그룹명         I*/
+									brkgacntno,     /* 위탁계좌번호   I*/
+									trddiv,         /* 매매구분       I*/
+									ordqty * -1,    /* 주문수량       I*/
+									msgcd,          /* 메세지코드     I*/
+									msg             /* 메세지         I*/
+									) < 0) {
+				Logout("[%s] 복수주문수량 누적오류[%s:%s]",
+					qodnm31302, msgcd, msg);
+			}
+			EXEC SQL COMMIT WORK;
+		}
+	}
+
+	/*----------------------------------------------------------------------*/
+	/* 3. Send Process                                                      */
+	/*----------------------------------------------------------------------*/
+	if (flag == 1) {
+		memcpy(sendbuff, hd, sizeof(PACKET_HD));
+		memcpy(&sendbuff[sizeof(PACKET_HD)],   grpin->ordhd.ordcnt, 3);
+		memcpy(&sendbuff[sizeof(PACKET_HD)+3], out.msgcd,           5);
+		memcpy(&sendbuff[sizeof(PACKET_HD)+8], out.ordno,           7);
+		memcpy(&sendbuff[sizeof(PACKET_HD)+15], grpin->ordhd.clientid,           7);
+		rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD)+3+19);
+		if (rtn <= 0) {
+			Logout("[%s] output data send error!![%d]", qodnm31302, rtn);
+		}
+	}
+
+	if (ordcnt == 1) {
+		/* Message 전송 */
+		*hd->cmd = 'M';
+		memcpy(sendbuff, hd, sizeof(PACKET_HD));
+		memcpy(&sendbuff[sizeof(PACKET_HD)], out.msg, 80);
+		rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD)+80);
+		if (rtn <= 0) {
+			Logout("[%s] output data send error!![%d]", qodnm31302, errno);
+		}
+	}
+	else {
+		*hd->cmd = 'M';
+		/* 전체거부처리 */
+		if (proccnt == 0) {
+			memcpy(sendbuff, hd, sizeof(PACKET_HD));
+			memcpy(&sendbuff[sizeof(PACKET_HD)], out.msg, 80);
+			rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD)+80);
+		}
+		/* 전체처리 */
+		else if (proccnt == ordcnt) {
+			if  (meddiv[0] == 'G')
+                sprintf(out.msg, "%-80.80s", "Order received.");
+            else
+                sprintf(out.msg, "%-80.80s", "정상주문 처리되었습니다.");
+			memcpy(sendbuff, hd, sizeof(PACKET_HD));
+			memcpy(&sendbuff[sizeof(PACKET_HD)], out.msg, 80);
+			rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD)+80);
+		}
+		/* 일부처리 */
+		else {
+			if  (meddiv[0] == 'G')
+                sprintf(out.msg, "%-80.80s", "Partial orders were rejected.");
+            else
+                sprintf(out.msg, "%-80.80s", "일부주문 거부 처리되었습니다.");
+			memcpy(sendbuff, hd, sizeof(PACKET_HD));
+			memcpy(&sendbuff[sizeof(PACKET_HD)], out.msg, 80);
+			rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD)+80);
+		}
+
+		if (rtn <= 0) {
+			Logout("[%s] output data send error!![%d]", qodnm31302, errno);
+		}
+	}
+
+	memcpy(hd->cmd, "R", 1);
+	memcpy(sendbuff, hd, sizeof(PACKET_HD));
+	rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD));
+	if (rtn <= 0) {
+		Logout("[%s] output data send error!![%d]", qodnm31302, rtn);
+	}
+
+	return 1;
+}

@@ -1,6 +1,6 @@
 /*
  * 설명   : 선물/옵션 주문
- * NAME   : BTO31101.pc
+ * NAME   : MTO31101.pc
  * DATE   : 2004년 3월 29일 월요일 오후 07시 25분 18초
  * By     : [아이티캐슬] 
  * Remark : 
@@ -19,6 +19,7 @@
 #include "exdcommon.h"
 
 #include "bttrio.h"
+#include "mtrio.h"
 #include "misexec.h"
 
 EXEC SQL INCLUDE SQLCA;
@@ -29,7 +30,7 @@ extern char  trddt[9];
 extern double GetTime2Double();
 
 /*--------------- Internal ---------------------*/
-char *qodnm31101 = "BTO31101";
+char *qodnm31101M = "MTO31101";
 
 /*******************************************************************************
  * 설명      :
@@ -37,12 +38,12 @@ char *qodnm31101 = "BTO31101";
  * Arguments :
  * Return    :
  ******************************************************************************/
-int BTO31101(int fd, void *arg, int len)
+int MTO31101(int fd, void *arg, int len)
 {
 	PACKET_HD   *hd;
-	ORDER_IN_HD *ordhd;
-	ORDER_TRSM   in;
-	ORDER_TRSMBK inbk;
+	MORDER_IN_HD *ordhd;
+	MORDER_TRSM   in;
+	MORDER_TRSMBK inbk;
 	OUT_MSG      out;
 	MIS_EXEC_DATA     misdata;
 
@@ -78,26 +79,26 @@ int BTO31101(int fd, void *arg, int len)
 	/* 1. Initial Process                                                   */
 	/*----------------------------------------------------------------------*/
 	hd    = (PACKET_HD *)arg;
-	ordhd = (ORDER_IN_HD *)((char *)arg+sizeof(PACKET_HD));
+	ordhd = (MORDER_IN_HD *)((char *)arg+sizeof(PACKET_HD));
 
 	ordcnt = Str2Int(ordhd->ordcnt, 3);
 
-	Logout("[%s] RCV HD  [%.34s]",   qodnm31101, (char *)arg+14);
-	//Logout("[%s] RCV DATA[%.1024s]", qodnm31101, (char *)arg+sizeof(PACKET_HD));
+	Logout("[%s] RCV HD  [%.34s]",   qodnm31101M, (char *)arg+14);
+	//Logout("[%s] RCV DATA[%.1024s]", qodnm31101M, (char *)arg+sizeof(PACKET_HD));
 #ifdef _DEBUG
-	Logout("[%s] input hd   cmd      [%.1s]",  qodnm31101, hd->cmd);
-	Logout("[%s] input hd   teamcd   [%.3s]",  qodnm31101, hd->teamcd);
-	Logout("[%s] input hd   ipaddr   [%.15s]", qodnm31101, hd->ipaddr);
-	Logout("[%s] input hd   id       [%.8s]",  qodnm31101, hd->id);
-	Logout("[%s] input hd   empno    [%.8s]",  qodnm31101, hd->empno);
-	Logout("[%s] input hd   method   [%.1s]",  qodnm31101, hd->method);
-	Logout("[%s] input data 주문건수 [%.3s]",  qodnm31101, ordhd->ordcnt);
-	Logout("[%s] input data 매체구분 [%.1s]",  qodnm31101, ordhd->meddiv);
-	Logout("[%s] input data 주문구분 [%.1s]",  qodnm31101, ordhd->orddiv);
-	Logout("[%s] input data 주문형태 [%.1s]",  qodnm31101, ordhd->ordfrm);
-	Logout("[%s] input data GrpNm    [%.30s]", qodnm31101, ordhd->grpnm);
-	Logout("[%s] input data UserID   [%.8s]",  qodnm31101, hd->id);
-	Logout("[%s] input data UserIP   [%.15s]", qodnm31101, hd->ipaddr);
+	Logout("[%s] input hd   cmd      [%.1s]",  qodnm31101M, hd->cmd);
+	Logout("[%s] input hd   teamcd   [%.3s]",  qodnm31101M, hd->teamcd);
+	Logout("[%s] input hd   ipaddr   [%.15s]", qodnm31101M, hd->ipaddr);
+	Logout("[%s] input hd   id       [%.8s]",  qodnm31101M, hd->id);
+	Logout("[%s] input hd   empno    [%.8s]",  qodnm31101M, hd->empno);
+	Logout("[%s] input hd   method   [%.1s]",  qodnm31101M, hd->method);
+	Logout("[%s] input data 주문건수 [%.3s]",  qodnm31101M, ordhd->ordcnt);
+	Logout("[%s] input data 매체구분 [%.1s]",  qodnm31101M, ordhd->meddiv);
+	Logout("[%s] input data 주문구분 [%.1s]",  qodnm31101M, ordhd->orddiv);
+	Logout("[%s] input data 주문형태 [%.1s]",  qodnm31101M, ordhd->ordfrm);
+	Logout("[%s] input data GrpNm    [%.30s]", qodnm31101M, ordhd->grpnm);
+	Logout("[%s] input data UserID   [%.8s]",  qodnm31101M, hd->id);
+	Logout("[%s] input data UserIP   [%.15s]", qodnm31101M, hd->ipaddr);
 #endif
 
 	sprintf(meddiv, "%.1s", ordhd->meddiv);
@@ -106,7 +107,7 @@ int BTO31101(int fd, void *arg, int len)
 	sendbuff = (char *)malloc(sizeof(PACKET_HD) + 3 + sizeof(OUT_MSG) * ordcnt);
 
 	memset(sendbuff,      0x20, sizeof(sendbuff));
-	memset((char *)&inbk, 0x00, sizeof(ORDER_TRSMBK));
+	memset((char *)&inbk, 0x00, sizeof(MORDER_TRSMBK));
 	memset((char *)&out,  0x20, sizeof(OUT_MSG));
 
 	memcpy(sendbuff, hd, sizeof(PACKET_HD));
@@ -143,10 +144,10 @@ int BTO31101(int fd, void *arg, int len)
 						msg				/* 에러메세지          O*/
 						) < 0)
 		{
-			Logout("[%s] msgcd[%s] msg[%s]", qodnm31101, msgcd, msg);
+			Logout("[%s] msgcd[%s] msg[%s]", qodnm31101M, msgcd, msg);
 
 			OrdMsgProc(msg, msgcd, meddiv, &out);
-			Logout("[%s] output[%.*s]", qodnm31101, sizeof(OUT_MSG), out);
+			Logout("[%s] output[%.*s]", qodnm31101M, sizeof(OUT_MSG), out);
 			flag = 0;
 
 			*hd->flag = ERRORSET_FG;
@@ -157,7 +158,7 @@ int BTO31101(int fd, void *arg, int len)
 		EXEC SQL COMMIT WORK;
 
 #ifdef _DEBUG
-		Logout("[%s] 그룹ID[%d]", qodnm31101, grpid);
+		Logout("[%s] 그룹ID[%d]", qodnm31101M, grpid);
 #endif
 
 	}
@@ -174,10 +175,10 @@ int BTO31101(int fd, void *arg, int len)
 						msg					/* 에러메세지          O*/
 						) < 0)
 		{
-			Logout("[%s] msgcd[%s] msg[%s]", qodnm31101, msgcd, msg);
+			Logout("[%s] msgcd[%s] msg[%s]", qodnm31101M, msgcd, msg);
 
 			OrdMsgProc(msg, msgcd, meddiv, &out);
-			Logout("[%s] output[%.*s]", qodnm31101, sizeof(OUT_MSG), out);
+			Logout("[%s] output[%.*s]", qodnm31101M, sizeof(OUT_MSG), out);
 			flag = 0;
 
 			*hd->flag = ERRORSET_FG;
@@ -196,10 +197,10 @@ int BTO31101(int fd, void *arg, int len)
 							msg				/* 에러메세지  O*/
 							) < 0)
 			{
-				Logout("[%s] msgcd[%s] msg[%s]", qodnm31101, msgcd, msg);
+				Logout("[%s] msgcd[%s] msg[%s]", qodnm31101M, msgcd, msg);
 
 				OrdMsgProc(msg, msgcd, meddiv, &out);
-				Logout("[%s] output[%.*s]", qodnm31101, sizeof(OUT_MSG), out);
+				Logout("[%s] output[%.*s]", qodnm31101M, sizeof(OUT_MSG), out);
 				flag = 0;
 
 				*hd->flag = ERRORSET_FG;
@@ -209,7 +210,7 @@ int BTO31101(int fd, void *arg, int len)
 			EXEC SQL COMMIT WORK;
 
 #ifdef _DEBUG
-			Logout("[%s] 복수계좌주문 그룹ID[%d]", qodnm31101, grpid);
+			Logout("[%s] 복수계좌주문 그룹ID[%d]", qodnm31101M, grpid);
 #endif
 
 		}
@@ -224,10 +225,10 @@ int BTO31101(int fd, void *arg, int len)
 			{
 				sprintf(msgcd, "50704");
 				sprintf(msg,   "전략명 임의생성시 오류가 발생하였습니다.");
-				Logout("[%s] msgcd[%s] msg[%s]", qodnm31101, msgcd, msg);
+				Logout("[%s] msgcd[%s] msg[%s]", qodnm31101M, msgcd, msg);
 				OrdMsgProc(msg, msgcd, meddiv, &out);
 				Logout("[%s] output[%.*s]",
-					qodnm31101, sizeof(OUT_MSG), out);
+					qodnm31101M, sizeof(OUT_MSG), out);
 				flag = 0;
 
 				*hd->flag = ERRORSET_FG;
@@ -238,13 +239,13 @@ int BTO31101(int fd, void *arg, int len)
 	}
 
 	/* 반복 처리 */
-	pos = sizeof(PACKET_HD) + sizeof(ORDER_IN_HD);
+	pos = sizeof(PACKET_HD) + sizeof(MORDER_IN_HD);
 
 	for (i = 0; i < ordcnt && flag == 1; i++) {
-		memset((char *)&in, 0x00, sizeof(ORDER_TRSM));
-		memcpy((char *)&in, (char *)ordhd, sizeof(ORDER_IN_HD));
-		memcpy((char *)&in+sizeof(ORDER_IN_HD), (char *)arg+pos,
-												sizeof(ORDER_IN));
+		memset((char *)&in, 0x00, sizeof(MORDER_TRSM));
+		memcpy((char *)&in, (char *)ordhd, sizeof(MORDER_IN_HD));
+		memcpy((char *)&in+sizeof(MORDER_IN_HD), (char *)arg+pos,
+												sizeof(MORDER_IN));
 
 		/* 일반주문은 grpid 가 의미가 없다 */
 		sprintf(cgrpid, "%03d", grpid);
@@ -254,11 +255,11 @@ int BTO31101(int fd, void *arg, int len)
 		/*-------------------------------------------------------------------*/
 		/* 2. 기본정보 채우기                                                */
 		/*-------------------------------------------------------------------*/
-		if (OrdMvIn2Inbk(in, &inbk, msgcd, msg) < 0) {
+		if (MtsOrdMvIn2Inbk(in, &inbk, msgcd, msg) < 0) {
 			Logout("[%s] 기본정보 Check Error : msgcd[%s] msg[%s]",
-				qodnm31101, msgcd, msg);
+				qodnm31101M, msgcd, msg);
 			OrdMsgProc(msg, msgcd, meddiv, &out);
-			Logout("[%s] output[%.*s]", qodnm31101, sizeof(OUT_MSG), out);
+			Logout("[%s] output[%.*s]", qodnm31101M, sizeof(OUT_MSG), out);
 			ordflag = 0;
 			BscOrdErrProc((char *)arg, len, (char *)&out, i+1);
 			EXEC SQL COMMIT WORK;
@@ -269,7 +270,7 @@ int BTO31101(int fd, void *arg, int len)
 			/*---------------------------------------------------------------*/
 			/* 3. Data Process                                               */
 			/*---------------------------------------------------------------*/
-			rtn = OrdProc(&inbk, &out);
+			rtn = MtsOrdProc(&inbk, &out);
 			if (rtn < 0) {
 				EXEC SQL ROLLBACK WORK;
 				OrdErrProc((char *)arg, len, (char *)&inbk, (char *)&out, i+1);
@@ -328,7 +329,7 @@ int BTO31101(int fd, void *arg, int len)
 									msg					/* 메세지         I*/
 									) < 0) {
 				Logout("[%s] 복수주문수량 누적오류[%s:%s]",
-					qodnm31101, msgcd, msg);
+					qodnm31101M, msgcd, msg);
 			}
 			EXEC SQL COMMIT WORK;
 		}
@@ -339,7 +340,7 @@ int BTO31101(int fd, void *arg, int len)
 		outpos += sizeof(out.ordno);
         memcpy(sendbuff+outpos, ordhd->clientid, 7);
         outpos += sizeof(ordhd->clientid);
-		pos    += sizeof(ORDER_IN);
+		pos    += sizeof(MORDER_IN);
 
 
 		if (ordflag == 1 && rtn == 1) proccnt++;
@@ -352,16 +353,16 @@ int BTO31101(int fd, void *arg, int len)
 	/*----------------------------------------------------------------------*/
 	if (flag == 1) {
 		Logout("[%s] CSND DATA[%.*s]",
-			qodnm31101, outpos - sizeof(PACKET_HD), sendbuff+sizeof(PACKET_HD));
+			qodnm31101M, outpos - sizeof(PACKET_HD), sendbuff+sizeof(PACKET_HD));
 		rtn = WriteStream2(fd, sendbuff, outpos);
 		if (rtn <= 0) {
-			Logout("[%s] output data send error!![%d]", qodnm31101, errno);
+			Logout("[%s] output data send error!![%d]", qodnm31101M, errno);
 		}
 	}
 
 #ifdef _DEBUG
         Logout("[%s:%d] TIMEGAP : 총 주문처리 시간 %f",
-            qodnm31101, pid, GetTime2Double() - dtime);
+            qodnm31101M, pid, GetTime2Double() - dtime);
 #endif
 
 	if (ordcnt == 1) {
@@ -371,7 +372,7 @@ int BTO31101(int fd, void *arg, int len)
 		memcpy(&sendbuff[sizeof(PACKET_HD)], out.msg, 80);
 		rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD)+80);
 		if (rtn <= 0) {
-			Logout("[%s] output data send error!![%d]", qodnm31101, errno);
+			Logout("[%s] output data send error!![%d]", qodnm31101M, errno);
 		}
 	}
 	else {
@@ -404,7 +405,7 @@ int BTO31101(int fd, void *arg, int len)
 		}
 
 		if (rtn <= 0) {
-			Logout("[%s] output data send error!![%d]", qodnm31101, errno);
+			Logout("[%s] output data send error!![%d]", qodnm31101M, errno);
 		}
 	}
 
@@ -413,7 +414,7 @@ int BTO31101(int fd, void *arg, int len)
 	memcpy(sendbuff, hd, sizeof(PACKET_HD));
 	rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD));
 	if (rtn <= 0) {
-		Logout("[%s] output data send error!![%d]", qodnm31101, errno);
+		Logout("[%s] output data send error!![%d]", qodnm31101M, errno);
 	}
     
 	/* 할당 해제 */

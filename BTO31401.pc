@@ -1,0 +1,317 @@
+/*
+ * 설명   : kill switch
+ * NAME   : BTO31401.pc
+ * Remark : 
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+
+#include "lgf2control.h"
+#include "exdcommon.h"
+#include "eurexordio.h"
+#include "packet.h"
+#include "krx_session.h"
+#include "kporder.h"
+
+#include "kspmargin.h"
+#include "bzio.h"
+#include "bizcommlib.h"
+#include "btbalcrrt.h"
+#include "btdblayout.h"
+#include "fuoptordlib.h"
+
+char bizdt[8+1];
+char msgcd[ 5+1];         /* sendmessagecode */
+char msg  [80+1];         /* sendmessage     */
+
+
+/****************************************************************************
+ *  사용자 DEFINE 정의
+ ****************************************************************************/
+int  BTO31401Proc(PACKET_HD *, BTO31401_IN *);
+int  EurexOrdPacketMake(BTO31401_INBK * ,  char * );
+
+int	 Str2Int();
+
+/****************************************************************************
+ *  사용자 외부변수 및 공용변수 정의
+ ****************************************************************************/
+char *qodnm31401u   = "BTO31401";
+
+EXEC SQL INCLUDE SQLCA;
+
+/*******************************************************************************
+ * 설명      : 협의매매 신청 거래소전송 Main
+ * Prototype :
+ * Arguments :
+ * Return    :
+ ******************************************************************************/
+int BTO31401(fd, arg)
+int  fd  ;
+void *arg;
+{
+	PACKET_HD    *hd;
+	BTO31401_IN  *in;
+
+	char         sendbuff[256];
+	int          rtn = 0;
+    char         orddiv[1+1];
+
+	Logout("[%s] ------- Start -> BTO31401 Process ----", qodnm31401u);
+
+	memset (msgcd, 0x00, sizeof(msgcd));
+	memset (msg,   0x00, sizeof(msg));
+    memset (orddiv,0x00 , sizeof(orddiv));
+
+	/*------------------------------------------------------------*
+	* 1. Initial Process
+	*------------------------------------------------------------*/
+	hd = (PACKET_HD *)arg;
+	in = (BTO31401_IN *)((char *)arg+sizeof(PACKET_HD));
+
+
+    Logout("주문처리 구분[%s]" , orddiv);
+
+	/*------------------------------------------------------------*
+	* 2. Data Process
+	*------------------------------------------------------------*/
+
+	   rtn = BTO31401Proc(hd, in);
+
+
+	if ( rtn < 0 )
+	{
+		hd->flag[0] = ERRORSET_FG;
+		EXEC SQL ROLLBACK WORK;
+	}
+	else
+		EXEC SQL COMMIT WORK;
+
+	/*------------------------------------------------------------*
+	* 3. Send Process
+	*------------------------------------------------------------*/
+
+	/*---------- Message 전송 ----------*/
+	hd->cmd[0] = 'M';
+	memcpy(sendbuff, hd, sizeof(PACKET_HD));
+	memcpy(&sendbuff[sizeof(PACKET_HD)], msg, sizeof(msg));
+	rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD)+sizeof(msg));
+
+	if (rtn <= 0) Logout("MESSAGE SEND ERROR!! [%d]", rtn);
+
+
+	/*---------- Release ----------*/
+	hd->cmd[0] = 'R';
+	memcpy(sendbuff, hd, sizeof(PACKET_HD));
+	rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD));
+
+	if (rtn <= 0) Logout("[%s] RELEASE ERROR!! [%d]", qodnm31401u, rtn);
+
+	Logout("[%s] ~~~~~ End of BTO31401Process ~~~~~", qodnm31401u);
+
+	return 1;
+}
+
+/*******************************************************************************
+ * 설명      : 협의매매 신청 거래소전송 처리
+ * Prototype : int BTO31401Proc(PACKET_HD *, BTO31401_IN *)
+ * Arguments : hd - PACKET HEADER
+ *             in - 화면 입력 데이터
+ * Return    : 정상 ( 1)
+ *             에러 (-1)
+ ******************************************************************************/
+int BTO31401Proc(hd, in)
+PACKET_HD    *hd;
+BTO31401_IN *in;
+{
+    char *fname = "BTO31401Proc";
+
+	int		rtn, i		= 0;
+    int     sendlen = 0;
+    char temp[100];
+    double ordamt;
+    char   sbuff[1024];
+    char   bizdt[8+1];
+    char   macaddr[12+1];
+
+    PACKETHD_BUFF  pbuff;
+	BTO31401_INBK  inbk;
+    BOS_TRCHECK    trchk;
+
+	/* 변수 초기화 */
+    memset((char *)&pbuff, 0x00, sizeof(PACKETHD_BUFF));
+    memset(sbuff, 0x00, sizeof(sbuff));
+	memset((char *)&inbk,  0x00, sizeof(BTO31401_INBK));
+    memset((char *)&trchk, 0x20, sizeof(BOS_TRCHECK));
+    memset(bizdt, 0x00, sizeof(bizdt));
+    memset(macaddr, 0x00, sizeof(macaddr));
+
+    Logout ("[BTO31401] Start Of BTO31401 kill switch 신청 전송");
+
+    /*------------------------------------------------*
+    *  PACKET HEAER COPY
+    *------------------------------------------------*/
+    memcpy(pbuff.meddiv, hd->method, sizeof(hd->method));
+    memcpy(pbuff.ipaddr, hd->ipaddr, sizeof(hd->ipaddr));
+    memcpy(pbuff.id,     hd->id,     sizeof(hd->id));
+    memcpy(pbuff.empno,  hd->empno,  sizeof(hd->empno));
+
+    memcpy(inbk.userid,     pbuff.id,     sizeof(pbuff.id) - 1);
+    memcpy(inbk.oppsnempno, pbuff.empno,  sizeof(pbuff.empno) - 1);
+    memcpy(inbk.oppsncrtno, pbuff.ipaddr, sizeof(pbuff.ipaddr) - 1);
+    GetTodayUsec(inbk.opdttime);
+
+
+    Logout("============================================");
+	Logout("[inbk.opdttime [%s]", inbk.opdttime);
+	Logout("[inbk.oppsncrtno [%s]", inbk.oppsncrtno);
+	Logout("[inbk.oppsnempno [%s]", inbk.oppsnempno);
+	Logout("[inbk.userid [%s]", inbk.userid);
+    Logout("--------------------------------------------");
+
+	Logout("[%s] RCV DATA[%.*s]", qodnm31401u, sizeof(BTO31401_IN), in);
+
+    EXEC SQL
+    SELECT Bizdt
+    INTO   :bizdt
+    FROM   BZ04_Bizdt
+    WHERE  MktCd = '99';
+
+	if (sqlca.sqlcode != 0) {
+        Logout("[%s] 일자 조회 오류[%s]", fname, sqlca.sqlerrm.sqlerrmc);
+        sprintf(msg,   "일자 조회 오류");
+        return -1;
+    }
+
+    Logout ("[BTO31401] 영업일 >>> [%s]", bizdt);
+
+    /* 변수값 설정 */
+    memcpy(inbk.trddt,           bizdt, sizeof(bizdt)-1);
+    memcpy (inbk.killgb,     in->killgb,      6); /* 위탁계좌번호                 */
+    memcpy (inbk.brkgacntno,     in->brkgacntno,      6); /* 위탁계좌번호                 */
+    GetTodayUsec(inbk.opdttime);
+
+
+	Logout("inbk.trddt [%s]", inbk.trddt);
+	Logout("inbk.killgb [%s]", inbk.killgb);
+	Logout("inbk.brkgacntno [%s]", inbk.brkgacntno);
+	Logout("inbk.opdttime [%s]", inbk.opdttime);
+
+        EXEC SQL
+        SELECT  A.OrdBrchNo     -- 소속지점
+        INTO    :inbk.brchno
+        FROM    BA13_BrkgAcntMst A,
+                BZ13_UniteCd     B,
+                BZ13_UniteCd     C,
+                BA01_CustMst     E
+        WHERE   A.BrkgAcntNo = :inbk.brkgacntno
+        AND     A.Custno     = E.Custno
+        AND     B.CdKnd      = 'ComCntyCd'
+        AND     B.CdNo       = A.NatlCntyCd
+        AND     C.CdKnd      = 'InvtPsnCd'
+        AND     A.InvtPsnCd  = C.Cdno;
+
+        if (sqlca.sqlcode != 0)
+        {
+            Logout("[%s] 계좌번호[%s]", fname, inbk.brkgacntno);
+            Logout("[%s] 계좌기본정보 조회 오류[%s]",
+                fname, sqlca.sqlerrm.sqlerrmc);
+            sprintf(msgcd, "99999");
+            sprintf(msg,   "계좌기본정보 조회 오류");
+            if (sqlca.sqlcode == 1403)
+            {
+                sprintf(msgcd, "20010");
+                sprintf(msg, "계좌번호를 확인하세요.");
+            }
+            return -1;
+        }
+
+    
+    /*---------------------------------------------*
+	*   거래소 전송...
+	*---------------------------------------------*/
+	sendlen = KillswitchPacketMake(&inbk, sbuff);
+
+	if ( sendlen < 0 ) {
+			return -1;
+    }
+	else {
+
+        rtn = SendToBUS( sbuff,
+                        sendlen,
+                        msgcd,
+                        msg);
+
+        if(rtn < 0 ) {
+          Logout("거래소 전송이 실패하였습니다. ");
+		  sprintf(msg, "%s", "거래소 전송이 실패하였습니다");
+          return -1;
+        }
+        else {  
+		sprintf(msg, "%s", "거래소 전송이 완료되었습니다");
+        }
+    }
+
+
+	Logout("[%s] %s", qodnm31401u, msg);
+
+	return 1;
+}
+
+/*******************************************************************************
+ * 설명      : Killswitch 신청(BK1) 거래소전송
+ * Prototype : int SndBK1_RcvBA1(BTO31401_INBK *)
+ * Arguments : inbk - 계좌 정보
+ * Return    : 정상 ( 1)
+ *             에러 (-1)
+ ******************************************************************************/
+int KillswitchPacketMake(BTO31401_INBK *inbk, char *sendbuff)
+{
+
+    KILLSWITCH_MASSCANCLE ord;
+    char      buff[20];
+    char      ymdhmss[17];
+
+    memset(ymdhmss , 0x00 , sizeof(ymdhmss));
+
+    GetTodayUsec(ymdhmss);
+
+
+    Logout("[%s] Start of PacketMake", __func__);
+
+    /**************  Message Text  ***************************************/
+    memset ((char *)&ord, 0x20, sizeof(KILLSWITCH_MASSCANCLE));
+    memcpy (ord.seq   ,  "00000000000",  11);              /* 주문일련번호           */
+    memcpy (ord.trcode,  "TCHKOR10001",  11);              /* 주문TRCODE             */
+    memcpy (ord.market_id ,  "DRV"      ,  3);               /* 시장ID                 */
+    memcpy (ord.board_id ,  "U2"      ,  2);               /* 보드ID                 */
+    memcpy (ord.bno,     "00082", 5);                 /* 회원번호               */
+    memcpy (ord.account,   "000", 3);                         /* 공백 */
+    memcpy (ord.account+3, inbk->brchno,     3);              /* 지점번호 */
+    memcpy (ord.account+6, inbk->brkgacntno,     6);          /* 위탁계좌번호 */
+    memcpy (ord.condition_cd ,  inbk->killgb      ,  1);               /* 보드ID                 */
+
+    /* 주문수탁방법*/
+	memcpy (ord.ordermediatypecd, "1", 1);
+
+    Ip2MedInfIp(buff, inbk->oppsncrtno);
+    memcpy(ord.orderidinfo, buff, 12); /* 주문자식별정보 */
+    memcpy (ord.macaddr,   buff, 12);               /* MAC주소    */
+
+    memcpy (ord.orderdate,   inbk->trddt ,     8);           /* 호가일자 */
+    memcpy(ord.memberordertime , ymdhmss+8, 8);          /* 주문자시간 */
+    memcpy(ord.memberordertime+8 , "0"      , 1);          /* 주문자시간 */
+
+    /* 회원처리항목 X(60) */
+    memset (ord.memberfield,   0x20, 60); 
+
+    memcpy(sendbuff, (char *)&ord, sizeof(KILLSWITCH_MASSCANCLE));
+
+    Logout("[%s] Kill Switch packet[%.*s]", __func__, sizeof(KILLSWITCH_MASSCANCLE), sendbuff);
+
+    return sizeof(KILLSWITCH_MASSCANCLE);
+}
+
+

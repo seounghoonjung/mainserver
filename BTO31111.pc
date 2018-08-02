@@ -1,0 +1,361 @@
+/*
+ * 설명   : 선물/옵션 반복주문
+ * NAME   : BTO31111.pc
+ * DATE   : 2004년 3월 29일 월요일 오후 07시 25분 18초
+ * By     : [아이티캐슬] 
+ * Remark : 2007.05.21 제도개선 관련 수정 완료
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <math.h>
+#include "lgf2control.h"
+#include "exdcommon.h"
+
+#include "bttrio.h"
+#include "misexec.h"
+
+EXEC SQL INCLUDE SQLCA;
+
+/*--------------- External ---------------------*/
+extern char  trddt[9];
+
+extern double GetTime2Double();
+
+/*--------------- Internal ---------------------*/
+char *qodnm31111 = "BTO31111";
+
+/*******************************************************************************
+ * 설명      :
+ * Prototype :
+ * Arguments :
+ * Return    :
+ ******************************************************************************/
+int BTO31111(int fd, void *arg, int len)
+{
+	PACKET_HD   *hd;
+	ORDER_IN_HD *ordhd;
+	ORDER_TRSM   in;
+	ORDER_TRSM   inchk;
+	ORDER_IN     ordin;
+	ORDER_TRSMBK inbk;
+	OUT_MSG      out;
+	MIS_EXEC_DATA     misdata;
+
+	/* 복수계좌그룹주문용 */
+	char         grpnm    [31];
+	char         grppswd  [9];
+	char         brkgacntno[7];	    /* 위탁계좌번호 */
+	char         trddiv   [2];		/* 매매구분       */
+	int          ordqty;			/* 주문수량       */
+	int          grpid = 0;    		/* 그룹 ID        */
+
+	char         meddiv   [2];		/* 매체구분 */
+	char         ordfrm   [2]; 		/* 주문형태 */
+	char         msgcd    [6];
+	char         msg      [81];
+	char         sendbuff [1024];
+
+	char         tmp[20];
+	int          proccnt = 0;
+	int          flag = 1, ordflag = 1;
+	int          i, pos, ordcnt, rtn;
+	int          ordposscnt = 0, totpossqty = 0, mrgnapplqty = 0;
+    double       ordmrgnamt = 0;		/* 증거금총액    O*/
+    double       ordmrgncash= 0;		/* 증거금현금    O*/
+	int          totrejqty = 0;			/* 누적거부수량 : 증거금 감소시 사용 */
+	int          applqty;
+	int          pid;
+	double       dtime, tottime;
+
+	tottime = GetTime2Double();
+	dtime = GetTime2Double();
+	pid = getpid();
+
+	/*----------------------------------------------------------------------*/
+	/* 1. Initial Process                                                   */
+	/*----------------------------------------------------------------------*/
+	hd    = (PACKET_HD *)arg;
+	ordhd = (ORDER_IN_HD *)((char *)arg+sizeof(PACKET_HD));
+
+	ordcnt = Str2Int(ordhd->ordcnt, 3);
+
+	#ifdef _DEBUG
+	Logout("[%s] RCV DATA[%.1024s]", qodnm31111, (char *)arg+sizeof(PACKET_HD));
+	Logout("[%s] RCV HD  [%.34s]",   qodnm31111, (char *)arg+14);
+	Logout("[%s] input hd   cmd      [%.1s]",  qodnm31111, hd->cmd);
+	Logout("[%s] input hd   teamcd   [%.3s]",  qodnm31111, hd->teamcd);
+	Logout("[%s] input hd   ipaddr   [%.15s]", qodnm31111, hd->ipaddr);
+	Logout("[%s] input hd   id       [%.8s]",  qodnm31111, hd->id);
+	Logout("[%s] input hd   empno    [%.8s]",  qodnm31111, hd->empno);
+	Logout("[%s] input hd   method   [%.1s]",  qodnm31111, hd->method);
+	Logout("[%s] input data 주문건수 [%.3s]",  qodnm31111, ordhd->ordcnt);
+	Logout("[%s] input data 매체구분 [%.1s]",  qodnm31111, ordhd->meddiv);
+	Logout("[%s] input data 주문구분 [%.1s]",  qodnm31111, ordhd->orddiv);
+	Logout("[%s] input data 주문형태 [%.1s]",  qodnm31111, ordhd->ordfrm);
+	Logout("[%s] input data 거래구분 [%.1s]",  qodnm31111, ordhd->dealdiv);
+	Logout("[%s] input data GrpNm    [%.30s]", qodnm31111, ordhd->grpnm);
+	Logout("[%s] input data UserID   [%.8s]",  qodnm31111, hd->id);
+	Logout("[%s] input data UserIP   [%.15s]", qodnm31111, hd->ipaddr);
+	#endif
+
+	sprintf(meddiv, "%.1s", ordhd->meddiv);
+    
+
+	memset(sendbuff,      0x20, sizeof(sendbuff));
+	memset((char *)&inbk, 0x00, sizeof(ORDER_TRSMBK));
+	memset((char *)&out,  0x20, sizeof(OUT_MSG));
+
+	if (ordcnt > MAX_ORDCNT) {
+		sprintf(msgcd, "50658");
+		sprintf(msg,   "주문횟수 한도 초과, 일부처리를 하세요.");
+		OrdMsgProc(msg, msgcd, meddiv, &out);
+		EXEC SQL ROLLBACK WORK;
+		BscOrdErrProc((char *)arg, len, (char *)&out, 0);
+		EXEC SQL COMMIT WORK;
+		*hd->flag = ERRORSET_FG;
+		flag = 0;
+	}
+
+    sprintf(inbk.ordinputid, "%.8s",  hd->id);
+    sprintf(inbk.ordinputip, "%.15s", hd->ipaddr);
+
+	/*-------------------------------------------------------------------*/
+	/* 2. 기본정보 채우기                                                */
+	/*-------------------------------------------------------------------*/
+	memset((char *)&inchk, 0x00, sizeof(ORDER_TRSM));
+	memcpy((char *)&inchk, (char *)ordhd, sizeof(ORDER_IN_HD));
+	memcpy((char *)&inchk+sizeof(ORDER_IN_HD), (char *)arg+sizeof(PACKET_HD)+
+									   sizeof(ORDER_IN_HD),
+												sizeof(ORDER_IN));
+	if (OrdMvIn2Inbk(inchk, &inbk, msgcd, msg) < 0) {
+		Logout("[%s] 기본정보 Check 거부 : msgcd[%s] msg[%s]",
+			qodnm31111, msgcd, msg);
+		OrdMsgProc(msg, msgcd, meddiv, &out);
+		Logout("[%s] output[%.*s]", qodnm31111, sizeof(OUT_MSG), out);
+		flag = 0;
+		*hd->flag = ERRORSET_FG;
+		BscOrdErrProc((char *)arg, len, (char *)&out, 1);
+		EXEC SQL COMMIT WORK;
+	}
+	else {
+		if (ChkReptBsc(&inbk, msgcd, msg) < 0) {
+			Logout("[%s] 기본데이터 Check Error : msgcd[%s] msg[%s]",
+				qodnm31111, msgcd, msg);
+			OrdMsgProc(msg, msgcd, meddiv, &out);
+			Logout("[%s] output[%.*s]", qodnm31111, sizeof(OUT_MSG), out);
+			flag = 0;
+			*hd->flag = ERRORSET_FG;
+			BscOrdErrProc((char *)arg, len, (char *)&out, 1);
+			EXEC SQL COMMIT WORK;
+		}
+	}
+	
+	if (inbk.series[0] == '4')
+	{
+        sprintf(msgcd, "50658");
+        sprintf(msg,   "반복주문은 스프레드 종목 주문 불가입니다.");
+        OrdMsgProc(msg, msgcd, meddiv, &out);
+        EXEC SQL ROLLBACK WORK;
+        BscOrdErrProc((char *)arg, len, (char *)&out, 0);
+        EXEC SQL COMMIT WORK;
+        *hd->flag = ERRORSET_FG;
+        flag = 0;
+	}
+
+
+	/*-------------------------------------------------------------------*/
+	/* 2. 개별 증거금 계산                                               */
+	/*-------------------------------------------------------------------*/
+	if (flag != 0) {
+		if (GetOneMrgnProc(trddt, inbk.brkgacntno, inbk.series, inbk.ordtyp,
+						   inbk.trddiv, 1, inbk.ordpx,
+						   &ordmrgnamt,		/* 증거금총액    O*/
+						   &ordmrgncash,	/* 증거금현금    O*/
+						   msgcd,
+						   msg
+						   ) < 0) {
+			Logout("[%s] 건별증거금계산 Check Error : msgcd[%s] msg[%s]",
+				qodnm31111, msgcd, msg);
+			OrdMsgProc(msg, msgcd, meddiv, &out);
+			Logout("[%s] output[%.*s]", qodnm31111, sizeof(OUT_MSG), out);
+			flag = 0;
+			*hd->flag = ERRORSET_FG;
+			BscOrdErrProc((char *)arg, len, (char *)&out, 1);
+			EXEC SQL COMMIT WORK;
+		}
+	}
+
+	if (flag != 0) {
+		/* 반복주문 가능 확인 */
+		memset((char *)&ordin, 0x00, sizeof(ORDER_IN));
+		memcpy((char *)&ordin, (char *)arg+sizeof(PACKET_HD)+
+										   sizeof(ORDER_IN_HD),
+														sizeof(ORDER_IN));
+		if (GetReptPossQty(	trddt,
+							ordcnt,
+							&ordin,
+							&ordposscnt,
+							&totpossqty,
+							&mrgnapplqty,
+							msgcd,
+							msg) < 0)
+		{
+			EXEC SQL ROLLBACK WORK;
+			Logout("[%s:%d] 주문가능 거부 msgcd[%s] msg[%s]",
+				qodnm31111, pid, msgcd, msg);
+
+			OrdMsgProc(msg, msgcd, meddiv, &out);
+			Logout("[%s:%d] output[%.*s]",qodnm31111,pid, sizeof(OUT_MSG), out);
+			flag = 0;
+			*hd->flag = ERRORSET_FG;
+			BscOrdErrProc((char *)arg, len, (char *)&out, 0);
+			EXEC SQL COMMIT WORK;
+		}
+	}
+	Logout("[%s:%d] TIMEGAP : 1. 반복전체 증거금처리 시간 %f",
+		qodnm31111, pid, GetTime2Double() - dtime);
+
+	/* Message 전송 */
+	*hd->cmd = 'M';
+	if (flag != 1) {
+		Logout("[%s] ##### 기본확인 거부 msg[%s]", qodnm31111, out.msg);
+	}
+	else if (ordposscnt <= 0) {
+		if (meddiv[0] == 'G')
+			sprintf(out.msg, "%-80.80s", "There is no Order Count on your Ordqty");
+		else
+		sprintf(out.msg, "%-80.80s",
+						 "해당주문수량으로 주문가능한 횟수가 없습니다.");
+	}
+	else if (ordcnt == ordposscnt) {
+		if (meddiv[0] == 'G')
+			sprintf(out.msg, "%-80.80s", "Order fully Received.");
+		else
+			sprintf(out.msg, "%-80.80s", "반복주문 전체전송 완료!!");
+		EXEC SQL COMMIT WORK;
+	}
+	else {
+		if (meddiv[0] == 'G')
+			sprintf(out.msg, "%-80.80s", "Order Partial Received.");
+		else
+			sprintf(msg,   "반복주문 일부[%d] 전송완료!!", ordposscnt);
+		sprintf(msgcd, "00000");
+		OrdMsgProc(msg, msgcd, meddiv, &out);
+		BscOrdErrProc((char *)arg, len, (char *)&out, 0);
+		EXEC SQL COMMIT WORK;
+	}
+	sprintf(out.msg, "%-80.80s", out.msg);
+
+	memcpy(sendbuff, hd, sizeof(PACKET_HD));
+	memcpy(&sendbuff[sizeof(PACKET_HD)], out.msg, 80);
+	rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD)+80);
+	if (rtn <= 0) {
+		Logout("[%s] output data send error!![%d]", qodnm31111, errno);
+	}
+
+	/* Realease */
+	*hd->cmd = 'R';
+	memcpy(sendbuff, hd, sizeof(PACKET_HD));
+	rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD));
+	if (rtn <= 0) {
+		Logout("[%s] output data send error!![%d]", qodnm31111, errno);
+	}
+
+	if (flag != 0) {
+		/* 그룹번호 채번 */
+		if (SeqNoCreate(trddt,			/* 일자                I*/
+						"G",		    /* 채번구분 - 주문형태 I*/
+						"GroupNo",		/* 채번명   - 의미없음 I*/
+						&grpid,			/* 그룹번호            O*/
+						msgcd,			/* 에러코드            O*/
+						msg				/* 에러메세지          O*/
+						) < 0)
+		{
+			Logout("[%s] msgcd[%s] msg[%s]", qodnm31111, msgcd, msg);
+
+			OrdMsgProc(msg, msgcd, meddiv, &out);
+			Logout("[%s] output[%.*s]", qodnm31111, sizeof(OUT_MSG), out);
+			flag = 0;
+
+			*hd->flag = ERRORSET_FG;
+			BscOrdErrProc((char *)arg, len, (char *)&out, 0);
+		}
+		EXEC SQL COMMIT WORK;
+		Logout("[%s] 그룹ID[%d]", qodnm31111, grpid);
+	}
+
+	/* ID, IP, 사번은 반복에 관계없이 여기서 한번만 설정 */
+	sprintf(inbk.ordinputid, "%.8s",  hd->id);
+	sprintf(inbk.ordinputip, "%.15s", hd->ipaddr);
+	sprintf(inbk.oppsnempno, "%.8s",  hd->empno);
+	sprintf(inbk.fixyn, "N");
+	inbk.grpid  = grpid;
+	inbk.ordcnt = ordposscnt;
+	/* 반복 처리 */
+	pos = sizeof(PACKET_HD) + sizeof(ORDER_IN_HD);
+	for (i = 0; i < ordposscnt && flag == 1; i++) {
+		dtime = GetTime2Double();
+
+		/*---------------------------------------------------------------*/
+		/* 3. Data Process                                               */
+		/* 미체결수량 증가/주문전송 , 증거금은 위에서 통으로 증가시킴    */
+		/*---------------------------------------------------------------*/
+		rtn = ReptOrdProc(&inbk, &out);
+		if (rtn < 0) {
+			EXEC SQL ROLLBACK WORK;
+			OrdErrProc((char *)arg, len, (char *)&inbk, (char *)&out, i+1);
+			EXEC SQL COMMIT WORK;
+
+			if (((mrgnapplqty - totrejqty) > inbk.ordqty) > 0)
+				applqty = inbk.ordqty;
+			else 
+				applqty = mrgnapplqty - totrejqty;
+
+			totrejqty += applqty;
+			Logout("[%s:%d] 누적 증거금거부수량[%d]",
+				qodnm31111, pid, totrejqty);
+			if (applqty > 0) {
+				Logout("[%s:%d] 거부 적용수량[%d]", qodnm31111, pid, applqty);
+				/* 증거금 해제 : 잔고는 해제시킬 필요가 없다. Rollback 됨. */
+				if (ReptMrgnCxlProc(&inbk,
+									applqty,		/* 증거금적용수량 */
+									ordmrgnamt,		/* 증거금총액     */
+									ordmrgncash,	/* 증거금현금     */
+									msgcd,
+									msg
+									)
+									< 0) {
+					Logout("[%s:%d] 증거금해제 오류[%s]",
+						qodnm31111, pid, msg);
+					EXEC SQL ROLLBACK WORK;
+				}
+				EXEC SQL COMMIT WORK;
+			}
+		}
+		else {
+			EXEC SQL COMMIT WORK;
+
+			/* MIS Data Send */
+			misdata.ordexecdiv[0] = '1'; /* 주문 */
+			memset (misdata.bizdt, 0x00, sizeof(misdata.bizdt)); 
+			memcpy (misdata.brchno,    inbk.brchno, 3);
+			sprintf(misdata.ordno,     "%07d",       inbk.ordno);
+			memcpy(misdata.execno,    "0000",       4);
+			if (MISExec(misdata, MIS_EXEC_DATA_SIZE) < 0) {
+				Logout("[%s] 주문 : MISExec 전송 오류!!", __FILE__);
+			}
+			Logout("[%s] 주문 : MISExec 전송완료!!", __FILE__);
+		}
+
+		Logout("[%s:%d] TIMEGAP : 1.주문한건 반복주문처리 시간 %f",
+			qodnm31111, pid, GetTime2Double() - dtime);
+
+		ordflag = 1;
+		rtn = 0;
+	}
+	Logout("[%s:%d] TIMEGAP : 전체 %d건 반복주문처리 시간 %f",
+		qodnm31111, pid, ordposscnt, GetTime2Double() - tottime);
+
+	return 1;
+}

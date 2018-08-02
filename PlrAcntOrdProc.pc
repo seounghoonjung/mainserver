@@ -1,0 +1,770 @@
+/*
+ * 설명   :	복수계좌 주문용
+ * NAME   : PlrAcntOrdProc.pc
+ * DATE   : 2004년 7월 24일 토요일 오전 10시 28분 49초
+ * By     : [이름쓰기] 
+ * Remark : 
+ * 2005.11.07 백두현, 스타지수선물 상장으로 인하여 CmdtCd = 4 추가
+ *                    KQ선물 신규주문 거부 로직 추가 (KQ선물이 전부폐지되면 제거해야함)
+ * 2006.02.03 백두현, 추가증거금 발생계좌 신규주문 불가 메시지 처리부분 반영
+ * 2006.02.28 백두현, FIXContChk(FIX약정계좌의 경우 주문거부) 제거
+ * 2006.11.27 백두현, 개별주식선물 상장으로 인하여 CmdtCd = 5 추가
+ * 2006.12.15 정승훈, 옵션매수전용계좌 추가
+ * 2007.05.22 정승훈, 제도통합 관련 수정완료
+ * 2008.04.18 정승훈, 주식선물 관련 수정 완료
+ * 2010.08.10 유태성, 상품전용계좌 체크
+ */
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "bttrio.h"
+#include "fuoptordlib.h"
+#include "kspmargin.h"
+
+EXEC SQL INCLUDE SQLCA;
+
+extern double GetTime2Double();
+
+/*******************************************************************************
+ * 설명      : 주문전송 주 처리부
+ * Prototype :
+ * Arguments : 핸들, 입력데이타
+ * Return    :
+ ******************************************************************************/
+int PlrAcntOrdProc(inbk, out)
+ORDER_TRSMBK *inbk;
+OUT_MSG      *out;
+{
+	ChkOrdMargin_IN   min;
+	ChkOrdMargin_OUT  mout;
+	ChkOrdMargin_OUT  orgnmout;
+	char  *fname = "PlrAcntOrdProc";
+	char   sbuff [1024], rbuff[1024], buff[100];
+	char   msgcd[6] = "00000";
+	char   msg   [81];
+	char   tmp   [20];
+    char   optyn[1+1];
+    char   bondyn[1+1];
+    char   spotdiv[1+1];
+	char   exorgnacptno[16+1];
+	char   commodityyn[1+1]; /* 상품전용계좌여부 */
+    char   mkttypcd[3+1]; /* 상품전용계좌여부 */
+
+    char   ordchkyn[1+1];  /* 적격개인투자자로직여부 */
+    char   eduyn[1+1];
+    char   prvtcorpdiv[1+1];
+    char   homefrgndiv[1+1];
+    char   avaloptyn[1+1];
+    
+	
+	int    sendlen, rtn;
+	double ordamt;
+	double newamt;
+	double applpx; /* 증거금 적용 단가 */
+	double ordmrgn;
+    char   credityn[1+1];
+
+
+	double dtime;
+	int    pid;
+	int    contqty = 0;
+
+	Kp200AccountMarginInfo nmrgn;
+	OrderMgnInputInfo      ordinfo;
+	
+	memset(commodityyn	, 0x00 , sizeof(commodityyn));
+    memset(mkttypcd		, 0x00 , sizeof(mkttypcd));    
+
+    memset(ordchkyn , 0x00 , sizeof(ordchkyn));
+    memset(eduyn , 0x00 , sizeof(eduyn));
+    memset(prvtcorpdiv , 0x00 , sizeof(prvtcorpdiv));
+    memset(homefrgndiv , 0x00 , sizeof(homefrgndiv));
+    memset(avaloptyn , 0x00 , sizeof(avaloptyn));
+
+    memcpy(credityn , "N" , 1);
+
+#ifdef _DEBUG
+	Logout("[%s] >>>>> 정상주문 주처리 시작........................", fname);
+#endif
+
+	pid   = getpid();
+	dtime = GetTime2Double();
+
+    /*-------------------------------------------------------------------*/
+     /* 옵션매수전용계좌 여부를 저장한다.                                 */
+     /*-------------------------------------------------------------------*/
+     if(inbk->acntdiv[0] == '1')
+     {
+
+         EXEC SQL
+         SELECT  OptBuyYn, KTBAcntYN, CommodityAcntYN, b.Eduyn , b.PrvtCorpDivCd, a.optyn , b.HomeFrgnDivCd
+         INTO    :optyn, :bondyn, :commodityyn , :eduyn, :prvtcorpdiv, :avaloptyn , :homefrgndiv
+         FROM BA13_BrkgAcntMst A,
+			  BA01_custMst B
+         WHERE BrkgAcntno = :inbk->brkgacntno
+		 AND	a.custno = b.custno;
+
+         if (sqlca.sqlcode != 0) {
+            Logout("[%s] 옵션매수전용계좌 SELECT 오류 ERROR!![%s]", fname, sqlca.sqlerrm.sqlerrmc);
+            sprintf(msgcd, "99999");
+            sprintf(msg,   "옵션매수 계좌조회 오류 ERROR");
+            OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+            Logout("[%s] output[%.*s]", fname, sizeof(OUT_MSG), out);
+             /* FIX Data 처리 (업무계오류시) */
+			FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+						inbk->orddiv, inbk->ordfrm,
+						inbk->orgnordno, inbk->trddt, inbk->brchno,
+						inbk->ordno, inbk->fixinfo, msgcd);
+            return -1;
+         }
+
+         EXEC SQL
+         SELECT 'Y'
+         INTO   :credityn
+         FROM   BS05_ExApndMrgnMst A
+         WHERE  A.Bizdt = :inbk->trddt
+         AND    A.BrkgAcntno = :inbk->brkgacntno
+         AND    A.ActYN      = 'Y';
+
+         if(sqlca.sqlcode != 0 && sqlca.sqlcode != 1403)
+         {
+            Logout("[%s] 장중추가증거금 SELECT 오류 ERROR!![%s]", fname, sqlca.sqlerrm.sqlerrmc);
+         }
+
+
+			EXEC SQL
+			Select  Ordchkyn
+			INTO    :ordchkyn
+			From    BT38_ordvalidationchk
+			where   STEP = 'STEPB';
+
+			if (sqlca.sqlcode != 0) {
+				sprintf (msgcd, "%.5s", "99999");
+				sprintf (msg,   "적격개인투자자STEPB조회오류");
+				return -1;
+			}
+
+
+		/* 제도변경 반영 개인고객투자자보호 2014.11.18 */
+
+		if(ordchkyn[0] = 'Y')
+		{
+			if ( prvtcorpdiv[0] == '1')
+			{
+				if( homefrgndiv[0] == '1')
+				{
+
+					Logout("[%s] 개인투자자 보호 제도 시작", fname);
+
+					Logout("[%s] eduyn [%s]", fname, eduyn);
+					Logout("[%s] avaloptyn [%s]", fname, avaloptyn);
+
+
+					if (eduyn[0] == 'N')
+					{
+						if (PrvtOrdRestrict( inbk->trddt,        /* 매매일       I*/
+											 inbk->brkgacntno,   /* 계좌번호     I*/
+											 inbk->cmdtcd,       /* 품목코드     I*/
+											 inbk->combodiv,     /* 정형복합구분 I*/
+											 inbk->series,       /* 종목코드     I*/
+											 inbk->ordqty,       /* 주문수량     I*/
+											 inbk->trddiv,       /* 매매구분     I*/
+											 msgcd,              /* 에러코드     O*/
+											 msg                 /* 에러메세지   O*/
+											) < 0) {
+							Logout("[%s] 교육미이수고객 주문제한 입니다. : msgcd[%s] msg[%s]", fname, msgcd, msg);
+							OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+							return -1;
+						}
+					}
+					else if (eduyn[0] == 'Y')
+					{
+					 Logout("[%s] 옵션가능여부 [%s]", fname, avaloptyn);
+						if (avaloptyn[0] == 'N')
+						{
+							if (memcmp(inbk->cmdtcd, "04", 2) == 0)
+							{
+								if (PrvtOrdRestrict( inbk->trddt,        /* 매매일       I*/
+													 inbk->brkgacntno,   /* 계좌번호     I*/
+													 inbk->cmdtcd,       /* 품목코드     I*/
+													 inbk->combodiv,     /* 정형복합구분 I*/
+													 inbk->series,       /* 종목코드     I*/
+													 inbk->ordqty,       /* 주문수량     I*/
+													 inbk->trddiv,       /* 매매구분     I*/
+													 msgcd,              /* 에러코드     O*/
+													 msg                 /* 에러메세지   O*/
+												) < 0) {
+	   
+									   Logout("[%s] 변동성지수선물 주문 불가 ERROR!![%s]", fname, inbk->cmdtcd);
+									   sprintf(msgcd, "95100");
+									   OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+									   sprintf(msg,   "해당 계좌는 변동성 지수선물 주문이 불가합니다.");
+									   return -1;
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+
+	/*-------------------------------------------------------------------*/
+	/* 1. 영업일/장운영 Check                                            */
+	/*-------------------------------------------------------------------*/
+/*
+	if (OrdJobOpenChk(inbk->trddt,
+					inbk->brchno,
+					inbk->series,
+					msgcd,
+					msg) < 0) {
+		Logout("[%s] 지점업무개시 Check Error : msgcd[%s] msg[%s]",
+			fname, msgcd, msg);
+		OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+		Logout("[%s] output[%.*s]", fname, sizeof(OUT_MSG), out);
+        FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                    inbk->orddiv, inbk->ordfrm,
+                    inbk->orgnordno, inbk->trddt, inbk->brchno,
+                    inbk->ordno, inbk->fixinfo, msgcd);
+		return -1;
+	}
+*/
+
+	/*-------------------------------------------------------------------*/
+	/* 2. 계좌 Check - 비밀번호/계좌상태/사고여부                        */
+	/*-------------------------------------------------------------------*/
+	if (OrdAcntChk(	inbk->brkgacntno,/* 위탁계좌번호 I*/
+					inbk->dealerno,	/* 딜러번호     I*/
+					inbk->pswd,		/* 계좌비밀번호 I*/
+					inbk->meddiv,	/* 매체구분     I*/
+					msgcd,			/* 에러코드     O*/
+					msg				/* 에러메세지   O*/
+					) < 0) {
+		Logout("[%s] 계좌 Check Error : msgcd[%s] msg[%s]",
+			fname, msgcd, msg);
+		OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+		Logout("[%s] output[%.*s]", fname, sizeof(OUT_MSG), out);
+        /* FIX Data 처리 (업무계오류시) */
+        FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                    inbk->orddiv, inbk->ordfrm,
+                    inbk->orgnordno, inbk->trddt, inbk->brchno,
+                    inbk->ordno, inbk->fixinfo, msgcd);
+		return -1;
+	}
+
+	/*-------------------------------------------------------------------*/
+	/* 3. 종목/호가정보/상하한가 Check                                   */
+	/*-------------------------------------------------------------------*/
+    /*
+	if (OrdSeriesChk(inbk->trddt,		
+					inbk->cmdtcd,	
+					inbk->combodiv,
+					inbk->series,	
+					inbk->ordqty,	
+					inbk->ordpx,	
+					inbk->ordfrm,	
+					inbk->orddiv,	
+					inbk->ordtyp,	
+					inbk->execqtydiv,
+					msgcd,				
+					msg				
+					) < 0) {
+		Logout("[%s] 종목/호가정보 Check Error : msgcd[%s] msg[%s]",
+			fname, msgcd, msg);
+		OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+		Logout("[%s] output[%.*s]", fname, sizeof(OUT_MSG), out);
+        FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                    inbk->orddiv, inbk->ordfrm,
+                    inbk->orgnordno, inbk->trddt, inbk->brchno,
+                    inbk->ordno, inbk->fixinfo, msgcd);
+		return -1;
+	}
+    */
+
+    /*-------------------------------------------------------------------*/
+    /* 국채 전용계좌의 주문 Check                                        */
+    /*-------------------------------------------------------------------*/
+     if (bondyn[0] == 'Y') {
+
+         EXEC SQL
+         SELECT ClrrgtDiv
+         INTO   :spotdiv
+         FROM  BZ52_CmdtBscInf
+         WHERE CmdtCd = :inbk->cmdtcd;
+
+         if (sqlca.sqlcode != 0) {
+            Logout("[%s] 주가지수선물 조회 오류 ERROR!![%s]", fname, sqlca.sqlerrm.sqlerrmc);
+            sprintf(msgcd, "99999");
+            sprintf(msg,   "국채전용계좌 주문유효성 조회 오류 ERROR");
+            OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+            return -1;
+         }
+
+
+         if (spotdiv[0] == '2')
+         {
+            Logout("[%s] 상품선물 이외의 주문 ERROR!![%s]", fname, inbk->cmdtcd);
+            sprintf(msgcd, "99984");
+            sprintf(msg,   " 국채등전용계좌는 KOSPI,STAR는 불가합니다.");
+            /* FIX Data 처리 (업무계오류시) */
+            FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                        inbk->orddiv, inbk->ordfrm,
+                        inbk->orgnordno, inbk->trddt, inbk->brchno,
+                        inbk->ordno, inbk->fixinfo, msgcd);
+            return -1;
+         }
+     }
+     
+  	/*-------------------------------------------------------------------*/
+	/* 상품전용계좌의 주문 Check                                        */
+	/*-------------------------------------------------------------------*/
+     if (commodityyn[0] == 'Y') {
+     
+     	/*
+     	EXEC SQL
+	    SELECT
+	    	BZ73.MktTypCd
+	    INTO   :mkttypcd
+		FROM BZ73_MktInf BZ73, BZ52_CmdtBscInf BZ52
+		WHERE 
+			BZ52.CmdtCd = :inbk->cmdtcd
+		AND	BZ52.MktCd = BZ73.MktCd	
+		AND RTRIM(BZ73.CntyCd) = 'KR'	/*국가코드* /
+		;
+		
+         if (sqlca.sqlcode != 0) {
+            Logout("[%s] 상품전용계좌 품목정보 SELECT 오류 ERROR!![%s]", fname, sqlca.sqlerrm.sqlerrmc);
+            sprintf(msgcd, "99999");
+            sprintf(msg,   " 품목조회 오류 ERROR");
+            OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+            return -1;
+         }
+         
+         if (mkttypcd[0] != '5')
+         {
+            Logout("[%s] 상품선물 이외의 주문 ERROR!![%s]", fname, inbk->cmdtcd);
+            sprintf(msgcd, "99990");
+            sprintf(msg,   " 상품전용계좌는 상품선물만 가능합니다.");
+            /* FIX Data 처리 (업무계오류시) * /
+            FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                        inbk->orddiv, inbk->ordfrm,
+                        inbk->orgnordno, inbk->trddt, inbk->brchno,
+                        inbk->ordno, inbk->fixinfo, msgcd);
+			return -1;
+         }
+         */
+         
+         /* LH(86, 돈육)와 미니금선물(87)만 주문 나갈 수 있다.*/
+         if (memcmp(inbk->cmdtcd, "86", 2)!=0 && memcmp(inbk->cmdtcd, "87", 2)!=0)
+         {
+            Logout("[%s] 상품선물 이외의 주문 ERROR!![%s]", fname, inbk->cmdtcd);
+            sprintf(msgcd, "99990");
+            sprintf(msg,   " 상품전용계좌는 상품선물만 가능합니다.");
+            /* FIX Data 처리 (업무계오류시) */
+            FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                        inbk->orddiv, inbk->ordfrm,
+                        inbk->orgnordno, inbk->trddt, inbk->brchno,
+                        inbk->ordno, inbk->fixinfo, msgcd);
+			return -1;
+         }
+     }  
+
+
+	if (inbk->acntdiv[0] == '1'  && inbk->futoptdiv[0] == '2'  && inbk->trddiv[0]  == '2')
+	{
+		Logout("[%s] KOSPI 옵션매도 수량 제한 기준Check Call", fname);
+		/*-------------------------------------------------------------------*/
+		/* 3-2. KOSPI 옵션매도 수량 제한 기준 Check                          */
+		/*-------------------------------------------------------------------*/
+		if (ChkOptSellQty("1",				/* 1:체크 2:조회 */
+						inbk->trddt,		/* 매매일       I*/
+						inbk->brkgacntno,	/* 계좌번호     I*/
+						inbk->cmdtcd,       /* 품목코드     I*/
+						inbk->series,		/* 종목코드     I*/
+						inbk->ordqty,		/* 주문수량     I*/
+						inbk->trddiv,		/* 매매구분     I*/
+						msgcd,				/* 에러코드     O*/
+						msg					/* 에러메세지   O*/
+						) < 0) {
+			Logout("[%s] KOSPI 옵션매도 수량 제한 기준Check Error : msgcd[%s] msg[%s]",
+				fname, msgcd, msg);
+			OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+			Logout("[%s] output[%.*s]", fname, sizeof(OUT_MSG), out);
+        /* FIX Data 처리 (업무계오류시) */
+        FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                    inbk->orddiv, inbk->ordfrm,
+                    inbk->orgnordno, inbk->trddt, inbk->brchno,
+                    inbk->ordno, inbk->fixinfo, msgcd);
+			return -1;
+		}
+	}
+
+	/*-------------------------------------------------------------------*/
+	/* LOCK 순서 : KOSPI : BT01 --> BM09 --> BM01 --> BM03               */
+	/*-------------------------------------------------------------------*/
+	/*             KOFEX : BT01 --> BM01 --> BM04 --> BM09               */
+	/*-------------------------------------------------------------------*/
+	/* 2004.11.17 : LOCK 순서 : BT01 --> BM01 --> BM03/BM04 --> BM09     */
+	/*-------------------------------------------------------------------*/
+	/*-------------------------------------------------------------------*/
+	/* 5. 예탁현황 Lock                                                  */
+	/*-------------------------------------------------------------------*/
+	EXEC SQL
+	UPDATE	BM01_DpsPC
+	SET		LastTrdMstDealNo = LastTrdMstDealNo
+	WHERE   BizDt      = :inbk->trddt
+	AND     BrkgAcntNo = :inbk->brkgacntno;
+
+	if (sqlca.sqlcode != 0 && sqlca.sqlcode != 1403) {
+		sprintf(msgcd, "99999");
+		sprintf(msg,   "계좌정보조회 오류");
+		Logout("[%s] msgcd[%s] msg[%s] [%s]",
+			fname, msgcd, msg, sqlca.sqlerrm.sqlerrmc);
+        /* FIX Data 처리 (업무계오류시) */
+        FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                    inbk->orddiv, inbk->ordfrm,
+                    inbk->orgnordno, inbk->trddt, inbk->brchno,
+                    inbk->ordno, inbk->fixinfo, msgcd);
+		return -1;
+	}
+
+	/*-------------------------------------------------------------------*/
+	/* 6. 증거금 Check                                                   */
+	/*-------------------------------------------------------------------*/
+	memset((char *)&min,  0x00, sizeof(min));
+	memset((char *)&mout, 0x00, sizeof(mout));
+
+	memcpy(min.bizdt,      inbk->trddt,     8);    /* 매매일자     */
+	/* 증거금유형 - 1:주문증거금Check 2:접수,체결처리 3:가계산 */
+	memcpy(min.mrgntyp,    "1",            1);
+	/* 처리구분 - 1:정상 2:정정 3:정정확인 4:취소확인 5:체결 8:정정거부 9:거부*/
+	memcpy(min.procdiv,    "1",            1);
+	memcpy(min.brkgacntno, inbk->brkgacntno,6);    /* 위탁계좌번호 */
+	memcpy(min.cmdtcd,     inbk->cmdtcd,    2);    /* 거래대상코드 */
+	memcpy(min.instgrpcd,  inbk->instgrpcd, 3);    /* 파생상품코드 */
+	memcpy(min.series,     inbk->series,   32);    /* 종목코드     */
+	memcpy(min.orddiv,     inbk->orddiv,    1);    /* 주문구분     */
+	memcpy(min.ordtyp,     inbk->ordtyp,    1);    /* 주문유형     */
+	memcpy(min.trddiv,     inbk->trddiv,    1);    /* 매매구분     */
+	min.ordqty = inbk->ordqty;                     /* 주문수량     */
+	min.ordpx  = inbk->ordpx;                      /* 주문가격     */
+	min.orgnordqty = 0;                           /* 원주문수량   */
+	min.orgnordpx  = 0;                           /* 원주문가격   */
+/*#######################################################################*/
+
+	/*-------------------------------------------------------------------*/
+	/* KOSPI 시장가, 최유리호가, 조건부지정가 :                          */
+	/*     증거금 기준으로 미체결금액을 맞추었다.                        */
+	/*-------------------------------------------------------------------*/
+		EXEC SQL
+		SELECT  DECODE(FutOptDiv,
+                        '2', DECODE(:inbk->trddiv, '1', DECODE(:inbk->ordtyp , '1', :inbk->ordpx , upperpxlimit3) , UppLmtPx)
+                           , BaseComdPx)
+		INTO    :applpx
+		FROM    BZ58_SeriesMst
+		WHERE   Series = :inbk->series;
+
+		if (sqlca.sqlcode != 0) {
+			sprintf(msgcd, "99999");
+			sprintf(msg,   "종목정보 조회 오류");
+			Logout("[%s] msgcd[%s] msg[%s] [%s]",
+				fname, msgcd, msg, sqlca.sqlerrm.sqlerrmc);
+        /* FIX Data 처리 (업무계오류시) */
+        FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                    inbk->orddiv, inbk->ordfrm,
+                    inbk->orgnordno, inbk->trddt, inbk->brchno,
+                    inbk->ordno, inbk->fixinfo, msgcd);
+			return -1;
+		}
+
+#ifdef _DEBUG
+	Logout("[%s:%d] TIMEGAP : 1. 기본처리 후 : %f",
+		fname, pid, GetTime2Double() - dtime);
+	dtime = GetTime2Double();
+#endif
+
+	/*-------------------------------------------------------------------*/
+	/* KOSPI : STOP, 롤오버주문이 아닌경우 , 반복주문도 제외             */
+	/*-------------------------------------------------------------------*/
+	if (inbk->acntdiv[0] == '1')
+	{
+		/*--------------------------------------------------------------*/
+		/* 증거금 계산 : BM03, BM01 변경                                */
+		/*--------------------------------------------------------------*/
+		memset((char *)&nmrgn, 0x00, sizeof(Kp200AccountMarginInfo));
+		memcpy(nmrgn.bizdt,      inbk->trddt,      8);
+		memcpy(nmrgn.brkgacntno, inbk->brkgacntno, 6);
+		memcpy(nmrgn.acntdiv,    inbk->acntdiv,    1);
+		memcpy(nmrgn.marketdiv,  "0",              1);
+
+		memset((char *)&ordinfo, 0x00, sizeof(OrderMgnInputInfo));
+		memcpy(ordinfo.procdiv, "1", 1);
+		memcpy(ordinfo.series,  inbk->series, 8);
+		memcpy(ordinfo.trd_div, inbk->trddiv, 1);
+		ordinfo.orgordno = 0;
+		ordinfo.qty      = inbk->ordqty;
+		ordinfo.prc      = applpx;
+
+		rtn = Kp200Margin_Proc(&nmrgn, &ordinfo);
+        if (rtn < 0)
+        {
+            switch (rtn)
+            {
+                case -2 : sprintf(msgcd, "90230");
+                          break;
+                case -3 : sprintf(msgcd, "50029");
+                          break;
+                case -4 : sprintf(msgcd, "90231");
+                          break;
+                case -5 : sprintf(msgcd, "20118");
+                          break;
+                default : sprintf(msgcd, "99999");
+                          break;
+            }
+
+            sprintf(msg, "%.*s", strlen(nmrgn.msg), nmrgn.msg);
+            OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+            Logout("[%s] output[%.*s]", fname, sizeof(OUT_MSG), out);
+        /* FIX Data 처리 (업무계오류시) */
+        FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                    inbk->orddiv, inbk->ordfrm,
+                    inbk->orgnordno, inbk->trddt, inbk->brchno,
+                    inbk->ordno, inbk->fixinfo, msgcd);
+
+            return -1;
+        }
+
+#ifdef _DEBUG
+		Logout("[%s:%d] TIMEGAP : 2. KOSPI 증거금 처리 후 : %f",
+			fname, pid, GetTime2Double() - dtime);
+		dtime = GetTime2Double();
+#endif
+
+		if (inbk->acntdiv[0] == '1') {
+			if ( prvtcorpdiv[0] == '1')
+			{
+				if( homefrgndiv[0] == '1')
+                {
+
+				  if(avaloptyn[0] == 'N')
+				  {
+					if(inbk->futoptdiv[0] == '2' && inbk->trddiv[0] == '2' && nmrgn.opt_sell_ord_mgn > 0)
+					  {
+						Logout("주문증거금  = [%f]" , nmrgn.o_order_mgn_amt);
+						Logout("[%s] 옵션매수이외의 주문 오류 ", fname);
+						sprintf(msgcd, "99982");
+						sprintf(msg,   "옵션매수주문 까지만 가능한 계좌입니다.");
+						return -1;
+					 }
+				   }
+				}
+			}
+			 
+            /*--------------------------------------------------------*/
+            /* 장중 추가증거금 계좌는 청산만 가능 */
+            /*--------------------------------------------------------*/
+            if(credityn[0] == 'Y')
+            {
+               if(nmrgn.o_order_mgn_amt > 0) {
+
+                    Logout("주문증거금  = [%f][%s]" , nmrgn.o_order_mgn_amt,credityn);
+                    Logout("[%s] 장중추가증거금  신규주문 불가 ", fname);
+                    sprintf(msgcd, "99985");
+                    sprintf(msg,   "신규주문 제한 고객입니다.");
+                    OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+                    /* FIX Data 처리 (업무계오류시) */
+                    FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                                inbk->orddiv, inbk->ordfrm,
+                                inbk->orgnordno, inbk->trddt, inbk->brchno,
+                                inbk->ordno, inbk->fixinfo, msgcd);
+                    return -1;
+               }
+            }
+
+
+			/*---------------------------------------------------------------*/
+			/* 종목별 증거금 : 해당포지션의 값만 읽어온다. 잔고 Update 조심  */
+			/*---------------------------------------------------------------*/
+			if (inbk->series[0] == '1')
+			{
+				/* 선물 주문증거금 */
+				mout.futordmrgn = nmrgn.series_buy_ord_mgn;
+			}
+			else if (inbk->series[0] == '2' || inbk->series[0] == '3')
+			{
+				if (inbk->trddiv[0] == '1')
+					/* 옵션매수 주문증거금*/
+					mout.optbuyordmrgn  = nmrgn.series_buy_ord_mgn;
+				else
+					/* 옵션매도 주문증거금*/
+					mout.optsellordmrgn = nmrgn.series_sell_ord_mgn;
+			}
+			else
+			{
+				/* 정형복합 주문증거금*/
+				mout.comboordmrgn = nmrgn.series_buy_ord_mgn;
+			}
+
+			EXEC SQL
+			UPDATE  BM01_DpsPC A
+			SET     A.BrkgMrgnAmt = (SELECT B.brkgmrgnamt
+									 FROM   BM03_MRGN B
+									 WHERE  B.BizDt = A.BizDt
+									 AND    B.BrkgAcntNo = A.BrkgAcntNo),
+					A.BrkgMrgnCash= (SELECT B.brkgmrgncash
+									 FROM   BM03_MRGN B
+									 WHERE  B.BizDt = A.BizDt
+									 AND    B.BrkgAcntNo = A.BrkgAcntNo)
+			WHERE   A.BizDt      = :inbk->trddt
+			AND     A.BrkgAcntNo = :inbk->brkgacntno;
+
+			if (sqlca.sqlcode != 0) {
+				Logout("[%s] 예탁현황 증거금 Update 오류!![%s]",
+					fname, sqlca.sqlerrm.sqlerrmc); 
+				sprintf(msgcd, "99999");
+				sprintf(msg,   "예탁현황 Update 오류");
+        /* FIX Data 처리 (업무계오류시) */
+        FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                    inbk->orddiv, inbk->ordfrm,
+                    inbk->orgnordno, inbk->trddt, inbk->brchno,
+                    inbk->ordno, inbk->fixinfo, msgcd);
+				return -1;
+			}
+		}
+	}
+
+	/*-------------------------------------------------------------------*/
+	/* 잔고 조회                                                         */
+	/*-------------------------------------------------------------------*/
+	memset((char *)&orgnmout, 0x00, sizeof(ChkOrdMargin_OUT));
+	EXEC SQL
+	SELECT  DECODE(:min.trddiv, '1', TDtBuyNonExecOrdQty, TDtSellNonExecOrdQty),
+			DECODE(:min.trddiv, '1', TDtBuyNonExecOrdAmt, TDtSellNonExecOrdAmt),
+			KfxFutOrdMrgn,
+			KfxOptBuyOrdMrgn,
+			KfxOptSellOrdMrgn,
+			KfxComboOrdMrgn
+	INTO    :min.nonexecqty,        -- 미체결수량
+			:min.nonexecamt,        -- 미체결금액
+			:orgnmout.futordmrgn,
+			:orgnmout.optbuyordmrgn,
+			:orgnmout.optsellordmrgn,
+			:orgnmout.comboordmrgn
+	FROM    BM09_Bal
+	WHERE   BizDt      = :min.bizdt
+	AND     BrkgAcntNo = :min.brkgacntno
+	AND     Series     = :min.series;
+
+	if (sqlca.sqlcode != 0 && sqlca.sqlcode != 1403) {
+		sprintf(msgcd, "99999");
+		sprintf(msg,   "계좌정보조회 오류");
+		Logout("[%s] msgcd[%s] msg[%s] [%s]",
+			fname, msgcd, msg, sqlca.sqlerrm.sqlerrmc);
+        /* FIX Data 처리 (업무계오류시) */
+        FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                    inbk->orddiv, inbk->ordfrm,
+                    inbk->orgnordno, inbk->trddt, inbk->brchno,
+                    inbk->ordno, inbk->fixinfo, msgcd);
+		return -1;
+	}
+	else if (sqlca.sqlcode == 1403) {
+		min.nonexecqty = 0;
+		min.nonexecamt = 0.0;
+	}
+
+#ifdef _DEBUG
+	Logout("[%s] 전 미체결수량 [%d]", fname, min.nonexecqty);
+	Logout("[%s]    미체결금액 [%f]", fname, min.nonexecamt);
+#endif
+
+	if (GetTrdAmt(inbk->series,
+				  inbk->ordqty,
+				  applpx,
+				  &ordamt,
+				  msgcd,
+				  msg) < 0) {
+		Logout("[%s] 미체결금액 계산 오류 : msg[%s]", fname, msg);
+        /* FIX Data 처리 (업무계오류시) */
+        FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                    inbk->orddiv, inbk->ordfrm,
+                    inbk->orgnordno, inbk->trddt, inbk->brchno,
+                    inbk->ordno, inbk->fixinfo, msgcd);
+		return -1;
+	}
+	min.nonexecqty += inbk->ordqty;
+	min.nonexecamt += ordamt;
+
+#ifdef _DEBUG
+	Logout("[%s] 후 미체결수량 [%d]", fname, min.nonexecqty);
+	Logout("[%s]    미체결금액 [%f]", fname, min.nonexecamt);
+#endif
+
+	/*--------------------------------------------------------------*/
+	/* 5. 잔고정리 : KOSPI 는 잔고정리후 증거금을 계산한다.         */
+	/*--------------------------------------------------------------*/
+	if (OrdBalProc(&min, &mout, msgcd, msg) < 0) {
+		Logout("[%s] 잔고정리 Check Error : msgcd[%s] msg[%s]",
+			fname, msgcd, msg);
+		OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+		Logout("[%s] output[%.*s]", fname, sizeof(OUT_MSG), out);
+        /* FIX Data 처리 (업무계오류시) */
+        FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                    inbk->orddiv, inbk->ordfrm,
+                    inbk->orgnordno, inbk->trddt, inbk->brchno,
+                    inbk->ordno, inbk->fixinfo, msgcd);
+		return -1;
+	}
+
+#ifdef _DEBUG
+	Logout("[%s:%d] TIMEGAP : 3. 잔고 생성 후 : %f",
+		fname, pid, GetTime2Double() - dtime);
+	dtime = GetTime2Double();
+#endif
+
+    /* 업무계 정상처리시 FIX Data 처리 */
+    /* FIX Data 처리 (업무계오류시) */
+    if (FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                inbk->orddiv, inbk->ordfrm,
+                inbk->orgnordno, inbk->trddt, inbk->brchno,
+                inbk->ordno, inbk->fixinfo, msgcd) < 0) return -1;
+
+	/* 8. ORS 전송 */
+	memset(sbuff, 0x00, sizeof(sbuff));
+
+    sendlen = KospiOrdPacketMake (inbk, sbuff);
+
+	rtn = SendToBUS(inbk->cmdtcd,
+					inbk->instgrpcd,
+					sbuff,
+					sendlen,
+					msgcd,
+					msg);
+	if (rtn < 0) {
+		Logout("[%s] ORS 거부 [%s][%s]", fname, msgcd, msg);
+		OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+            /* FIX Data 처리 (업무계오류시) */
+            FixOrderNew(inbk->meddiv, inbk->ordqty, inbk->wtordsetyn, inbk->brkgacntno,
+                        inbk->orddiv, inbk->ordfrm,
+                        inbk->orgnordno, inbk->trddt, inbk->brchno,
+                        inbk->ordno, inbk->fixinfo, msgcd);
+		return -1;
+	}
+
+	sprintf(buff, "%07d", inbk->ordno);
+	memcpy (out->msgcd, "00000", 5);
+	sprintf(out->msg,   "%-80.80s", "정상 주문처리가 완료되었습니다.");
+	memcpy (out->ordno, buff,    7);
+	Logout("[%s] output[%.*s]", fname, sizeof(OUT_MSG), out);
+
+#ifdef _DEBUG
+	Logout("[%s:%d] TIMEGAP : 4. BUS(FEP) 전송 후 : %f",
+		fname, pid, GetTime2Double() - dtime);
+	dtime = GetTime2Double();
+#endif
+
+
+	EXEC SQL COMMIT WORK;
+
+	return 1;
+}

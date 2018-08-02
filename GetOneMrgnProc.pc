@@ -1,0 +1,141 @@
+/*
+ * 설명   :
+ * NAME   : GetOneMrgnProc.pc
+ * DATE   : 2004년 11월 29일 월요일 오전 05시 33분 55초
+ * By     : [이름쓰기] 
+ * Remark : 
+ * 2005.11.07 백두현, 스타지수선물 상장으로 인하여 CmdtCd = 4 추가
+ * 2006.12.15 정승훈, 옵션매수전용계좌 추가
+ * 2007.05.21 정승훈, 제도통합 관련 수정완료
+ */
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "bttrio.h"
+#include "fuoptordlib.h"
+#include "margin.h"
+#include "kspmargin.h"
+
+exec sql include sqlca;
+
+/*******************************************************************************
+ * 설명      :
+ * Prototype :
+ * Arguments :
+ * Return    :
+ ******************************************************************************/
+int GetOneMrgnProc(bizdt, brkgacntno, series, ordtyp, trddiv,
+				   ordqty, ordpx, o_ordmrgnamt, o_ordmrgncash, msgcd, msg)
+char  *bizdt;
+char  *brkgacntno;
+char  *series;
+char  *ordtyp;
+char  *trddiv;
+int    ordqty;
+double ordpx;
+double           *o_ordmrgnamt;
+double           *o_ordmrgncash;
+char             *msgcd;
+char             *msg;
+{
+	OrderMgnInputInfo ordinfo;
+	ordmargin_in_t    mrgn_in;
+	ordmargin_out_t   mrgn_out;
+	double            ordmrgnamt = 0;
+	double            ordmrgncash= 0;
+	char   cmdtcd[2+1];
+	char   instgrpcd[4];
+    char   optyn[1+1];
+	double applpx;
+
+#ifdef _DEBUG
+	Logout("[%s] >> 건당 증거금 계산 시작........................", __func__);
+#endif
+
+	if (brkgacntno[0] == '9') {
+		*o_ordmrgnamt  = 0;
+		*o_ordmrgncash = 0;
+		return 1;
+	}
+
+ 
+	EXEC SQL
+	SELECT	CmdtCd,
+			InstGrpCd,
+			DECODE(FutOptDiv , '2' , DECODE(:trddiv , '1' , DECODE(:ordtyp , '1' , :ordpx , upperpxlimit3) , UppLmtPx)
+                                         , BaseComdPx)
+	INTO	:cmdtcd,
+			:instgrpcd,
+			:applpx
+	FROM	BZ58_SeriesMst
+	WHERE	Series = :series;
+
+	if (sqlca.sqlcode != 0) {
+		sprintf(msgcd, "99999");
+		sprintf(msg,   "종목정보 조회 오류");
+		if (sqlca.sqlcode == 1403) {
+			sprintf(msgcd, "90025");
+			sprintf(msg,   "해당하는 종목이 존재하지 않습니다.");
+		}
+		Logout("[%s] msgcd[%s] msg[%s] [%s]",
+			__func__, msgcd, msg, sqlca.sqlerrm.sqlerrmc);
+		return -1;
+	}
+
+		memset((char *)&ordinfo, 0x00, sizeof(OrderMgnInputInfo));
+		memcpy(ordinfo.procdiv, "1", 1);
+		memcpy(ordinfo.series,  series, 8);
+		memcpy(ordinfo.trd_div, trddiv, 1);
+		ordinfo.orgordno = 0;
+		ordinfo.qty      = ordqty;
+		ordinfo.prc      = applpx;
+
+		if (Kp200OneOrdMargin_Proc(brkgacntno,
+									&ordinfo,
+									msg,
+									&ordmrgnamt,
+									&ordmrgncash) < 0) {
+			sprintf(msgcd, "99999");
+			sprintf(msg,   "KOSPI증거금처리 오류");
+			Logout("[%s] Kp200OneOrdMargin_Proc Error [%s]", __func__, msg);
+			return -1;
+		}
+#ifdef _DEBUG
+		Logout("[%s] KOSPI 주문증거금 [%f] 현금[%f]",
+			__func__, ordmrgnamt, ordmrgncash);
+#endif
+
+		*o_ordmrgnamt  = ordmrgnamt;
+		*o_ordmrgncash = ordmrgncash;
+
+		#if 0
+		/*---------------------------------------------------------------*/
+		/* 종목별 증거금 : 해당포지션의 값만 읽어온다. 잔고 Update 조심  */
+		/*---------------------------------------------------------------*/
+		/* 선물 주문증거금 */
+		if (series[0] == '1')
+		{
+			mout->futordmrgn = ordmrgnamt;
+		}
+		/* 옵션 주문증거금*/
+		else if (series[0] == '2' || series[0] == '3')
+		{
+			if (trddiv[0] == '1')
+				mout->optbuyordmrgn  = ordmrgnamt;
+			else
+				mout->optsellordmrgn = ordmrgnamt;
+		}
+		/* 정형복합 주문증거금*/
+		else
+		{
+			mout->comboordmrgn = ordmrgnamt;
+		}
+		#endif
+ 
+
+#ifdef _DEBUG
+	Logout("[%s] << 건당 증거금 계산 완료........................", __func__);
+#endif
+
+	return 1;
+}

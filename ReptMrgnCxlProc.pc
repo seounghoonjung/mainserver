@@ -1,0 +1,218 @@
+/*
+ * 설명   :	KOSPI 옵션 주문전송 - I/F 분리 임시 프로그램
+ * NAME   : OrdProc.pc
+ * DATE   : 2004년 7월 24일 토요일 오전 10시 28분 49초
+ * By     : [이름쓰기] 
+ * Remark : 
+ * 2005.11.07 백두현, 스타지수선물 상장으로 인하여 CmdtCd = 4 추가
+ * 2006.11.27 백두현, 개별주식선물 상장으로 인하여 CmdtCd = 5 추가
+ * 2007.05.21 정승훈, 제도개선 관련 수정완료
+ */
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "bttrio.h"
+#include "fuoptordlib.h"
+#include "kspmargin.h"
+
+EXEC SQL INCLUDE SQLCA;
+
+extern double GetTime2Double();
+
+/*******************************************************************************
+ * 설명      : 주문전송 주 처리부
+ * Prototype :
+ * Arguments : 핸들, 입력데이타
+ * Return    :
+ ******************************************************************************/
+int ReptMrgnCxlProc(inbk, kspapplqty, kspordmrgnamt, kspordmrgncash, msgcd, msg)
+ORDER_TRSMBK *inbk;
+int           kspapplqty;
+double        kspordmrgnamt;
+double        kspordmrgncash;
+char         *msgcd;
+char         *msg;
+{
+	ChkOrdMargin_IN   min;
+	ChkOrdMargin_OUT  mout;
+	char  *fname = "OrdProc";
+	char   tmp[20];
+	double ordamt;
+	double applpx; /* 증거금 적용 단가 */
+
+	double dtime;
+	int    pid;
+
+	Kp200AccountMarginInfo nmrgn;
+	OrderMgnInputInfo      ordinfo;
+
+#ifdef _DEBUG
+	Logout("[%s] >> 반복주문 증거금감소 주처리 시작.................", fname);
+#endif
+
+	pid   = getpid();
+	dtime = GetTime2Double();
+
+	memset((char *)&mout, 0x00, sizeof(mout));
+
+	if (inbk->brkgacntno[0] == '9') return 1;
+
+	/*---------------------------------------------------------------*/
+	/* 예탁현황 LOCK                                                 */
+	/*---------------------------------------------------------------*/
+	EXEC SQL
+	UPDATE  BM01_DpsPC
+	SET     LastTrdMstDealNo = LastTrdMstDealNo
+	WHERE   BizDt      = :inbk->trddt
+	AND     BrkgAcntNo = :inbk->brkgacntno;
+
+	if (sqlca.sqlcode != 0) {
+		Logout("[%s] 예탁현황 증거금 LOCK 오류!![%s]",
+			__func__, sqlca.sqlerrm.sqlerrmc);
+		sprintf(msgcd, "ERROR");
+		sprintf(msg,   "예탁현황 Update 오류");
+		return -1;
+	}
+
+		/*---------------------------------------------------------------*/
+		/* 종목별 증거금 : 해당포지션의 값만 읽어온다. 잔고 Update 조심  */
+		/*---------------------------------------------------------------*/
+		/* 선물 주문증거금 */
+		if (inbk->series[0] == '1')
+		{
+			mout.futordmrgn = kspordmrgnamt * kspapplqty;
+		}
+		/* 옵션 주문증거금*/
+		else if (inbk->series[0] == '2' || inbk->series[0] == '3')
+		{
+			if (inbk->trddiv[0] == '1')
+				mout.optbuyordmrgn  = kspordmrgnamt * kspapplqty;
+			else
+				mout.optsellordmrgn = kspordmrgnamt * kspapplqty;
+		}
+		/* 스프레드 주문증거금*/
+		else
+		{
+			mout.comboordmrgn = kspordmrgnamt * kspapplqty;
+		}
+
+		EXEC SQL
+		UPDATE	BM03_BrkgAcntMrgnPC
+		SET		BrkgMrgnAmt    = BrkgMrgnAmt    -
+								(:kspordmrgnamt * :kspapplqty),
+				BrkgMrgnCash   = BrkgMrgnAmt    -
+								(:kspordmrgncash * :kspapplqty),
+				BrkgOrdMrgnAmt = BrkgOrdMrgnAmt -
+								(:kspordmrgnamt * :kspapplqty),
+				BrkgOrdMrgnCash= BrkgOrdMrgnCash-
+								(:kspordmrgnamt * :kspapplqty),
+				FutOrdMrgn     = FutOrdMrgn     -
+								(:kspordmrgnamt * :kspapplqty),
+				OptBuyOrdMrgn  = OptBuyOrdMrgn  -
+								(:kspordmrgnamt * :kspapplqty),
+				OptSellOrdMrgn = OptSellOrdMrgn -
+								(:kspordmrgnamt * :kspapplqty),
+				ComboOrdMrgn   = ComboOrdMrgn   -
+								(:kspordmrgnamt * :kspapplqty)
+		WHERE	BizDt      = :inbk->trddt
+		AND		BrkgAcntNo = :inbk->brkgacntno;
+
+		if (sqlca.sqlcode != 0) {
+			Logout("[%s] KOSPI 증거금상세 Update 오류!![%s]",
+				__func__, sqlca.sqlerrm.sqlerrmc);
+			sprintf(msgcd, "ERROR");
+			sprintf(msg,   "증거금상세현황 정정 오류");
+			return -1;
+		}
+
+#ifdef _DEBUG
+		Logout("[%s] KOSPI 증거금상세 Update 완료!!", __func__);
+#endif
+
+		EXEC SQL
+		UPDATE  BM01_DpsPC A
+		SET     A.BrkgMrgnAmt = (SELECT B.brkgmrgnamt
+								FROM   BM03_MRGN B
+								WHERE  B.BizDt = A.BizDt
+								AND    B.BrkgAcntNo = A.BrkgAcntNo),
+				A.BrkgMrgnCash= (SELECT B.brkgmrgncash
+								FROM   BM03_MRGN B
+								WHERE  B.BizDt = A.BizDt
+								AND    B.BrkgAcntNo = A.BrkgAcntNo)
+		WHERE   A.BizDt      = :inbk->trddt
+		AND     A.BrkgAcntNo = :inbk->brkgacntno;
+
+		if (sqlca.sqlcode != 0) {
+			Logout("[%s] 예탁현황 증거금 Update 오류!![%s]",
+				__func__, sqlca.sqlerrm.sqlerrmc);
+			sprintf(msgcd, "ERROR");
+			sprintf(msg,   "예탁현황 Update 오류");
+			return -1;
+		}
+
+#ifdef _DEBUG
+		Logout("[%s] KOSPI 예탁현황 Update 완료!!", __func__);
+#endif
+
+#ifdef _DEBUG
+	Logout("[%s:%d] TIMEGAP : 증거금 거부처리 후 : %f",
+		fname, pid, GetTime2Double() - dtime);
+#endif
+
+	EXEC SQL
+	SELECT  DECODE(FutOptDiv,
+                        '2', DECODE(:inbk->trddiv, '1', DECODE(:inbk->ordtyp , '1', :inbk->ordpx , upperpxlimit3) , UppLmtPx)
+                           , BaseComdPx)
+	INTO    :applpx
+	FROM    BZ58_SeriesMst
+	WHERE   Series = :inbk->series;
+
+	if (sqlca.sqlcode != 0) {
+		sprintf(msgcd, "06099");
+		sprintf(msg,   "종목정보 조회 오류");
+		Logout("[%s] msgcd[%s] msg[%s] [%s]",
+			fname, msgcd, msg, sqlca.sqlerrm.sqlerrmc);
+		return -1;
+	}
+
+	if (GetTrdAmt(inbk->series,
+				inbk->ordqty,
+				applpx,
+				&ordamt,
+				msgcd,
+				msg) < 0) {
+		Logout("[%s] 미체결금액 계산 오류 : msg[%s]", fname, msg);
+		return -1;
+	}
+
+	/*--------------------------------------------------------------*/
+	/* 잔고 UPDATE                                                  */
+	/*--------------------------------------------------------------*/
+	EXEC SQL
+	UPDATE	BM09_Bal
+	SET		KfxFutOrdMrgn     =  KfxFutOrdMrgn - :mout.futordmrgn,
+			KfxOptBuyOrdMrgn  =  KfxOptBuyOrdMrgn - :mout.optbuyordmrgn,
+			KfxOptSellOrdMrgn =  KfxOptSellOrdMrgn - :mout.optsellordmrgn,
+			KfxComboOrdMrgn   =  KfxComboOrdMrgn - :mout.comboordmrgn
+	WHERE	BizDt     = :inbk->trddt
+	AND		BrkgAcntNo= :inbk->brkgacntno
+	AND		Series    = :inbk->series;
+
+	if (sqlca.sqlcode != 0) {
+		Logout("[%s] 잔고 미체결/종목증거금 Update 오류!![%s]",
+			__func__, sqlca.sqlerrm.sqlerrmc);
+		Logout("[%s] 종목증거금[%f:%f:%f:%f]",
+			__func__, mout.futordmrgn, mout.optbuyordmrgn,
+					  mout.optsellordmrgn, mout.comboordmrgn);
+		sprintf(msgcd, "ERROR");
+		sprintf(msg,   "잔고 Update 오류");
+		return -1;
+	}
+#ifdef _DEBUG
+	Logout("[%s] 잔고 Update 완료!!", __func__);
+
+	Logout("[%s] << 반복주문 증거금감소 주처리 시작.................", fname);
+#endif
+
+	return 1;
+}

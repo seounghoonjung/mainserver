@@ -1,0 +1,221 @@
+/*
+ * 설명   :	KOSPI 옵션 주문전송 - I/F 분리 임시 프로그램
+ * NAME   : OrdProc.pc
+ * DATE   : 2004년 7월 24일 토요일 오전 10시 28분 49초
+ * By     : [이름쓰기] 
+ * Remark : 
+ * 2005.11.07 백두현, 스타지수선물 상장으로 인하여 CmdtCd = 4 추가
+ * KQ선물 신규주문 거부 로직 추가 (KQ선물이 전부폐지되면 제거해야함)
+ * 2006.11.27 백두현, 개별주식선물 상장으로 인하여 CmdtCd = 5 추가
+ * 2007.05.21 정승훈, 제도개선 관련 수정완료
+ */
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "bttrio.h"
+#include "fuoptordlib.h"
+#include "kspmargin.h"
+#include "realordexec.h"
+
+EXEC SQL INCLUDE SQLCA;
+
+extern double GetTime2Double();
+
+/*******************************************************************************
+ * 설명      : 주문전송 주 처리부
+ * Prototype :
+ * Arguments : 핸들, 입력데이타
+ * Return    :
+ ******************************************************************************/
+int ReptOrdProc(inbk, out)
+ORDER_TRSMBK *inbk;
+OUT_MSG      *out;
+{
+	char  *fname = "ReptOrdProc";
+	char   sbuff[1024], buff[100];
+	char   msgcd[6];
+	char   msg [81];
+	int    sendlen, rtn;
+	double applpx; /* 증거금 적용 단가 */
+
+	double dtime;
+	int    pid;
+    int    contqty = 0;
+
+#ifdef _DEBUG
+	Logout("[%s] >> 반복주문 잔고정리/전송처리 시작...............", fname);
+#endif
+
+	pid   = getpid();
+	dtime = GetTime2Double();
+
+
+	/*-------------------------------------------------------------------*/
+	/* KOSPI 시장가, 최유리호가, 조건부지정가 :                          */
+	/*     증거금 기준으로 미체결금액을 맞추었다.                        */
+	/*-------------------------------------------------------------------*/
+		EXEC SQL
+		SELECT  DECODE(FutOptDiv,
+                        '2', DECODE(:inbk->trddiv, '1', DECODE(:inbk->ordtyp , '1', :inbk->ordpx , upperpxlimit3) , UppLmtPx)
+                           , BaseComdPx)
+		INTO    :applpx
+		FROM    BZ58_SeriesMst
+		WHERE   Series = :inbk->series;
+
+		if (sqlca.sqlcode != 0) {
+			sprintf(msgcd, "99999");
+			sprintf(msg,   "종목정보 조회 오류");
+			Logout("[%s] msgcd[%s] msg[%s] [%s]",
+				fname, msgcd, msg, sqlca.sqlerrm.sqlerrmc);
+			return -1;
+		}
+
+	/*-------------------------------------------------------------------*/
+	/* 잔고 조회                                                         */
+	/*-------------------------------------------------------------------*/
+	EXEC SQL
+	UPDATE	BM09_Bal
+	SET		TDtBuyNonExecOrdQty = TDtBuyNonExecOrdQty +
+									DECODE(:inbk->trddiv,
+											'1', :inbk->ordqty, 0),
+			TDtBuyNonExecOrdAmt = TDtBuyNonExecOrdAmt +
+									DECODE(:inbk->trddiv,
+											'1', F_TrdAmt(:inbk->trddt,
+														  :inbk->series,
+														  :applpx,
+														  :inbk->ordqty),
+											0),
+			TDtSellNonExecOrdQty = TDtSellNonExecOrdQty +
+									DECODE(:inbk->trddiv,
+											'2', :inbk->ordqty, 0),
+			TDtSellNonExecOrdAmt = TDtSellNonExecOrdAmt +
+									DECODE(:inbk->trddiv,
+											'2', F_TrdAmt(:inbk->trddt,
+														  :inbk->series,
+														  :applpx,
+														  :inbk->ordqty),
+											0)
+	WHERE   BizDt      = :inbk->trddt
+	AND     BrkgAcntNo = :inbk->brkgacntno
+	AND     Series     = :inbk->series;
+
+	if (sqlca.sqlcode != 0) {
+		sprintf(msgcd, "99999");
+		sprintf(msg,   "잔고 Update 오류");
+		Logout("[%s] msgcd[%s] msg[%s] [%s]",
+			fname, msgcd, msg, sqlca.sqlerrm.sqlerrmc);
+
+		if (sqlca.sqlcode == 1403 && inbk->acntdiv[0] != 1) {
+			Logout("[%s] acntdiv[%s]", fname, inbk->acntdiv);
+			EXEC SQL
+			INSERT INTO BM09_Bal
+			(
+				BizDt,
+				CustNo,
+				BrkgAcntNo,
+				Series,
+				CmdtCd,
+				InstGrpCd,
+				TDtBuyNonExecOrdQty,
+				TDtBuyNonExecOrdAmt,
+				TDtSellNonExecOrdQty,
+				TDtSellNonExecOrdAmt
+			)
+			VALUES
+			(
+				:inbk->trddt,
+				DECODE(SUBSTRB(:inbk->brkgacntno, 1, 1), '9', 'PA    ', :inbk->custno),
+				:inbk->brkgacntno,
+				:inbk->series,
+				:inbk->cmdtcd,
+				:inbk->instgrpcd,
+				DECODE(:inbk->trddiv, '1', :inbk->ordqty, 0),
+				DECODE(:inbk->trddiv,
+						'1', F_TrdAmt(:inbk->trddt, :inbk->series, :applpx, :inbk->ordqty),
+						0),
+				DECODE(:inbk->trddiv, '2', :inbk->ordqty, 0),
+				DECODE(:inbk->trddiv,
+						'2', F_TrdAmt(:inbk->trddt, :inbk->series, :applpx, :inbk->ordqty),
+						0)
+			);
+
+			if (sqlca.sqlcode != 0) {
+				sprintf(msgcd, "99999");
+				sprintf(msg,   "잔고 Update 오류");
+				Logout("[%s] msgcd[%s] msg[%s] [%s]",
+					fname, msgcd, msg, sqlca.sqlerrm.sqlerrmc);
+				return -1;
+			}
+
+		}
+		else {
+			return -1;
+		}
+	}
+
+	/* 6. 주문번호 채번 */
+	if (SeqNoCreate(inbk->trddt,	/* 일자                I*/
+					"1",			/* 채번구분 - 주문형태 I*/
+					inbk->brchno,	/* 채번명   - 지점번호 I*/
+					&inbk->ordno,	/* 주문번호            O*/
+					msgcd,			/* 에러코드            O*/
+					msg				/* 에러메세지          O*/
+					) < 0) {
+		Logout("[%s] msgcd[%s] msg[%s]", fname, msgcd, msg);
+		OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+		Logout("[%s] output[%.*s]", fname, sizeof(OUT_MSG), out);
+		return -1;
+	}
+
+	/* 7. 주문내역 생성 */
+	if (OrdInput(	inbk,			/* 주문데이타        I*/
+					"1",            /* 주문상태 1:전송중 I*/
+					msgcd,			/* 에러코드          O*/
+					msg 			/* 에러메세지        O*/
+				) < 0) {
+		Logout("[%s] msgcd[%s] msg[%s]", fname, msgcd, msg);
+		OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+		Logout("[%s] output[%.*s]", fname, sizeof(OUT_MSG), out);
+		return -1;
+	}
+
+#ifdef _DEBUG
+	Logout("[%s:%d] TIMEGAP : 1. 잔고/주문 생성 후 : %f",
+		fname, pid, GetTime2Double() - dtime);
+	dtime = GetTime2Double();
+#endif
+
+	/* 8. ORS 전송 */
+	/* 8. Packet Make : KOSPI, KOFEX 분리 */
+	memset(sbuff, 0x00, sizeof(sbuff));
+
+	sendlen = KospiOrdPacketMake (inbk, sbuff);
+
+	rtn = SendToBUS(inbk->cmdtcd,
+					inbk->instgrpcd,
+					sbuff,
+					sendlen,
+					msgcd,
+					msg);
+	if (rtn < 0) {
+		Logout("[%s] ORS 거부 [%s][%s]", fname, msgcd, msg);
+		OrdMsgProc(msg, msgcd, inbk->meddiv, out);
+		return -1;
+	}
+
+	sprintf(buff, "%07d", inbk->ordno);
+	memcpy (out->msgcd, "00000", 5);
+	sprintf(out->msg,   "%-80.80s", "정상 주문처리가 완료되었습니다.");
+	memcpy (out->ordno, buff,    7);
+	Logout("[%s] output[%.*s]", fname, sizeof(OUT_MSG), out);
+
+#ifdef _DEBUG
+	Logout("[%s:%d] TIMEGAP : 2. BUS(FEP) 전송 후 : %f",
+		fname, pid, GetTime2Double() - dtime);
+	dtime = GetTime2Double();
+
+	Logout("[%s] << 반복주문 잔고정리/전송처리 끝...............", fname);
+#endif
+
+	return 1;
+}

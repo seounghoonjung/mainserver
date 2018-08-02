@@ -1,0 +1,552 @@
+/*
+ * 설명   : 주문가능수량조회(HTS)
+ * NAME   : BTQ39105.pc
+ * DATE   : 2004년 4월 23일 금요일 오후 02시 01분 42초
+ * By     : [ItCastle] 
+ * Remark : 
+ * 2005.11.07 백두현, 스타지수선물 상장으로 인하여 CmdtCd = 4 추가
+ * 2006.02.03 백두현, 추가증거금 발생계좌 신규주문 불가 메시지 처리부분 반영
+ * 2006.11.27 백두현, 개별주식선물 상장으로 인하여 CmdtCd = 5 추가
+ * 2007.05.21 정승훈, 제도통합관련 수정완료
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include "lgf2control.h"
+#include "exdcommon.h"
+
+#include "bttrio.h"
+#include "margin.h"
+#include "kspmargin.h"
+#include "fuoptordlib.h"
+
+EXEC SQL INCLUDE SQLCA;
+
+extern double GetTime2Double();
+
+/*******************************************************************************
+ * 설명      : 
+ * Prototype :
+ * Arguments : 
+ * Return    :
+ ******************************************************************************/
+int GetReptPossQty(bizdt, ordcnt, ordin,
+				   o_ordposscnt, o_totordqty, o_mrgnapplqty, msgcd, msg)
+char     *bizdt;
+int       ordcnt;
+ORDER_IN *ordin;
+int      *o_ordposscnt;
+int      *o_totordqty;
+int      *o_mrgnapplqty;
+char     *msgcd;
+char     *msg;
+{
+	char   acntdiv   [2];
+	char   custno    [7];
+	char   brkgacntno[7];
+	char   series    [33];
+	char   cmdtcd[2+1];
+	char   instgrpcd [4];
+	char   ordtyp    [2];
+	char   trddiv    [2];
+
+    char   prvtcorpdiv[1+1];
+    char   homefrgndiv[1+1];
+	char   avaloptyn[1+1];
+	char   futoptdiv[1+1];
+
+	double ordpx;
+	int    ordqty;
+	double applpx;
+	int    ordpossqty;	/* 주문가능수량 */
+	int    clrnpossqty;	/* 청산가능수량 */
+	int    totpossqty;	/* 총가능수량   */
+	int    ordposscnt;	/* 주문가능횟수 */
+	int    totordqty;	/* 총주문수량   */
+
+	char   postmrgnyn[2];   /* 2005.08.25 백두현, 사후증거금계좌여부 */
+
+	char   buff[100];
+	int    rtn, len = 0;
+	double dtime;
+	int    pid;
+
+	ChkOrdMargin_IN  min;
+	ChkOrdMargin_OUT mout;
+	Kp200AccountMarginInfo nmrgn;
+	OrderMgnInputInfo      ordinfo;
+
+	pid   = getpid();
+	dtime = GetTime2Double();
+
+
+    memset(prvtcorpdiv , 0x00 , sizeof(prvtcorpdiv));
+    memset(homefrgndiv , 0x00 , sizeof(homefrgndiv));
+    memset(avaloptyn , 0x00 , sizeof(avaloptyn));
+    memset(futoptdiv , 0x00 , sizeof(futoptdiv));
+
+#ifdef _DEBUG
+	Logout ("[%s:%d] >> 반복주문 증거금가능수량 계산", __func__, pid);
+#endif
+
+	sprintf(brkgacntno, "%.6s",  ordin->brkgacntno);
+	sprintf(series,     "%.32s", ordin->series);
+	sprintf(ordtyp,     "%.1s",  ordin->ordtyp);
+	sprintf(trddiv,     "%.1s",  ordin->trddiv);
+	sprintf(buff,       "%.9s",  ordin->ordpx);
+	ordpx = atof(buff);
+	ordqty = Str2Int(ordin->ordqty, 8);
+
+
+	EXEC SQL
+	SELECT	CmdtCd,
+			InstGrpCd,
+			FutOptDiv
+	INTO	:cmdtcd,
+			:instgrpcd,
+			:futoptdiv
+	FROM	BZ58_SeriesMst
+	WHERE	Series = :series;
+
+	if (sqlca.sqlcode != 0) {
+		sprintf (msgcd, "99999");
+		sprintf (msg,   "종목코드 조회오류.");
+		if (sqlca.sqlcode == 1403) {
+			sprintf (msgcd, "90025");
+			sprintf (msg,   "해당하는 종목이 존재하지 않습니다.");
+		}
+		Logout ("[%s:%d] 종목정보조회 오류[%s]",
+			__func__, pid, sqlca.sqlerrm.sqlerrmc);
+		return -1;
+	}
+
+#ifdef _DEBUG
+	Logout ("[%s:%d] 종목코드 [%s]", __func__, pid, series);
+	Logout ("[%s:%d] 거래대상 [%d] 파생상품[%s]",
+		__func__, pid, cmdtcd, instgrpcd);
+	Logout ("[%s:%d] 계좌[%s] 주문유형[%s] 매매구분[%s] 수량[%d] 가격[%f]",
+		__func__, pid, brkgacntno, ordtyp, trddiv, ordqty, ordpx);
+#endif
+
+	if (trddiv[0] != '1' && trddiv[0] != '2') {
+		sprintf (msgcd, "50015");
+		sprintf (msg,   "매매구분을 확인하세요.");
+		Logout ("[%s:%d] 매매구분 오류 거부[%s]", __func__, pid, trddiv);
+		return -1;
+	}
+
+	if (ordtyp[0] != '1' && ordtyp[0] != '2' &&
+		ordtyp[0] != '3' && ordtyp[0] != '4') {
+		sprintf (msgcd, "50409");
+		sprintf (msg,   "주문유형을 확인하세요.");
+		Logout ("[%s:%d] 주문유형 오류 거부[%s]", __func__, pid, ordtyp);
+		return -1;
+	}
+
+	if (brkgacntno[0] != '9') {
+		EXEC SQL
+		SELECT	'1',
+				a.PostMrgnYN,
+                a.CustNo ,
+				b.PrvtCorpDivCd,
+				b.HomeFrgnDivCd ,
+				a.optyn
+		INTO	:acntdiv,
+				:postmrgnyn,
+                :custno,
+				:prvtcorpdiv,
+				:homefrgndiv,
+				:avaloptyn
+		FROM	BA13_BrkgAcntMst A,
+				BA01_Custmst B
+		WHERE	a.BrkgAcntNo = :brkgacntno
+		And		a.custno = b.custno;
+	}
+	else {
+		EXEC SQL
+		SELECT	AcntDiv, 'PA    '
+		INTO	:acntdiv, :custno
+		FROM	BA82_SelfAcDealerInf
+		WHERE	AcntNo = :brkgacntno;
+	}
+
+	if (sqlca.sqlcode != 0) {
+		sprintf (msgcd, "99999");
+		sprintf (msg,   "계좌정보 조회 오류.");
+		if (sqlca.sqlcode == 1403) {
+			sprintf (msgcd, "20010");
+			sprintf (msg,   "계좌번호를 확인하세요.");
+		}
+		Logout ("[%s:%d] 거래소구분조회 거부[%s]",
+			__func__, pid, sqlca.sqlerrm.sqlerrmc);
+		return -1;
+	}
+
+
+	/*-------------------------------------------------------------------*/
+	/*  예탁현황 Lock                                                    */
+	/*-------------------------------------------------------------------*/
+	EXEC SQL
+	UPDATE	BM01_DpsPC
+	SET		LastTrdMstDealNo = LastTrdMstDealNo
+	WHERE   BizDt      = :bizdt
+	AND     BrkgAcntNo = :brkgacntno;
+
+	if (sqlca.sqlcode != 0 && sqlca.sqlcode != 1403) {
+		sprintf(msgcd, "99999");
+		sprintf(msg,   "계좌정보조회 오류");
+		Logout("[%s:%d] msgcd[%s] msg[%s] [%s]",
+			__func__, pid, msgcd, msg, sqlca.sqlerrm.sqlerrmc);
+		return -1;
+	}
+
+	/*------------------------------------------------------------------*/
+	/* 주문가능 구하기                                                  */
+	/*------------------------------------------------------------------*/
+		if (GetKspOrdPossQty(bizdt,
+							brkgacntno,
+							series,
+							instgrpcd,
+							ordtyp,
+							trddiv,
+							ordpx,
+							&ordpossqty,
+							msgcd,	/* O*/
+							msg		/* O*/
+							) < 0)
+		{
+			Logout ("[%s:%d] 주문가능 구하기 오류[%s:%s]",
+				__func__, pid, msgcd, msg);
+			return -1;
+		}
+
+	/* 주문가능수량의 청산가능 구하기 */
+	EXEC SQL
+	SELECT	GREATEST(DECODE(:trddiv,
+				            '1', GREATEST((SellQty - BuyQty), 0) -
+								 TDtBuyNonExecOrdQty  - SellHoldQty,
+				            GREATEST((BuyQty - SellQty), 0) -
+							TDtSellNonExecOrdQty  - BuyHoldQty),
+					0)
+	INTO	:clrnpossqty
+	FROM	BM09_Bal
+	WHERE	BizDt      = :bizdt
+	AND		BrkgAcntNo = :brkgacntno
+	AND		Series     = :series
+	AND		(BuyQty > 0 OR SellQty > 0);
+
+	if (sqlca.sqlcode != 0 && sqlca.sqlcode != 1403) {
+		sprintf (msgcd, "99999");
+		sprintf (msg,   "전산부에 문의하십시오.");
+		Logout ("[%s:%d] 주문가능 구하기 오류[%s:%s]",
+			__func__, pid, msgcd, msg);
+		return -1;
+	}
+	else if (sqlca.sqlcode == 1403) {
+		Logout ("[%s:%d] 보유잔고 : 0 ==> 청산가능 : 0", __func__, pid);
+		clrnpossqty = 0;
+	}
+
+	totpossqty = ordpossqty + clrnpossqty;	/* 합계     */
+	ordposscnt = totpossqty / ordqty;
+
+#ifdef _DEBUG
+	Logout ("[%s:%d] 주문가능[%d] 청산가능[%d] 총가능[%d] 주문가능횟수[%d]",
+		__func__, pid, ordpossqty, clrnpossqty, totpossqty, ordposscnt);
+#endif
+
+	/* 2005.08.25 백두현, 사후증거금 로직 적용 */
+	if ((ordcnt < ordposscnt) || (postmrgnyn[0] == 'Y'))
+	{
+		ordposscnt = ordcnt;
+		Logout ("[%s:%d] 주문가능횟수 조정 [%d]", __func__, pid, ordposscnt);
+	}
+
+	totordqty = ordposscnt * ordqty;
+	if ((totordqty - clrnpossqty) >= 0)
+		*o_mrgnapplqty = totordqty - clrnpossqty;
+	else
+		*o_mrgnapplqty = 0;
+
+#ifdef _DEBUG
+	Logout("[%s:%d] 총주문적용수량 [%d] 증거금적용수량[%d]",
+		__func__, pid, totordqty, *o_mrgnapplqty);
+#endif
+
+	*o_ordposscnt = ordposscnt;
+	*o_totordqty  = totordqty;
+
+	/* 2005.08.25 백두현, 사후증거금 로직 적용 */
+	if ((postmrgnyn[0] == 'N') && (totpossqty <= 0))
+	{
+		sprintf(msgcd, "90228");
+		sprintf(msg,   "주문가능수량 부족입니다.");
+		Logout ("[%s:%d] 주문가능수량 부족[%s:%s]",
+			__func__, pid, msgcd, msg);
+		return -1;
+	}
+
+	if ((postmrgnyn[0] == 'N') && (ordposscnt <= 0))
+	{
+		sprintf(msgcd, "90229");
+		sprintf(msg,   "해당주문수량으로 주문가능한 횟수가 없습니다.");
+		Logout ("[%s:%d] 주문가능 부족[%s:%s]",
+			__func__, pid, msgcd, msg);
+		return -1;
+	}
+
+	/* 자기계좌 이면 return */
+	if (acntdiv[0] != '1') {
+		Logout("[%s:%d] 자기계좌는 여기까지", __func__, pid);
+		return 1;
+	}
+
+	/*-------------------------------------------------------------------*/
+	/*    증거금 Check                                                   */
+	/*-------------------------------------------------------------------*/
+	memset((char *)&min,  0x00, sizeof(min));
+	memset((char *)&mout, 0x00, sizeof(mout));
+
+	memcpy(min.bizdt,      bizdt,     8);    /* 매매일자     */
+	/* 증거금유형 - 1:주문증거금Check 2:접수,체결처리 3:가계산 */
+	memcpy(min.mrgntyp,    "1",            1);
+	/* 처리구분 - 1:정상 2:정정 3:정정확인 4:취소확인 5:체결 8:정정거부 9:거부*/
+	memcpy(min.procdiv,    "1",            1);
+	memcpy(min.brkgacntno, brkgacntno,6);    /* 위탁계좌번호 */
+	memcpy(min.cmdtcd,     cmdtcd,    2);    /* 거래대상코드 */
+	memcpy(min.instgrpcd,  instgrpcd, 3);    /* 파생상품코드 */
+	memcpy(min.series,     series,   32);    /* 종목코드     */
+	memcpy(min.orddiv,     "1",       1);    /* 주문구분     */
+	memcpy(min.ordtyp,     ordtyp,    1);    /* 주문유형     */
+	memcpy(min.trddiv,     trddiv,    1);    /* 매매구분     */
+	min.ordqty = totordqty;                  /* 주문수량     */
+	min.ordpx  = ordpx;                      /* 주문가격     */
+	min.orgnordqty = 0;                      /* 원주문수량   */
+	min.orgnordpx  = 0;                      /* 원주문가격   */
+/*#######################################################################*/
+
+	/*-------------------------------------------------------------------*/
+	/* KOSPI 시장가, 최유리호가, 조건부지정가 :                          */
+	/*     증거금 기준으로 미체결금액을 맞추었다.                        */
+	/*-------------------------------------------------------------------*/
+		EXEC SQL
+		SELECT  DECODE(FutOptDiv,
+                        '2', DECODE(:trddiv, '1', DECODE(:ordtyp , '1', :ordpx , upperpxlimit3) , UppLmtPx)
+                           , BaseComdPx)
+		INTO    :applpx
+		FROM    BZ58_SeriesMst
+		WHERE   Series = :series;
+
+		if (sqlca.sqlcode != 0) {
+			sprintf(msgcd, "99999");
+			sprintf(msg,   "종목정보 조회 오류");
+			Logout("[%s:%d] msgcd[%s] msg[%s] [%s]",
+				__func__, pid, msgcd, msg, sqlca.sqlerrm.sqlerrmc);
+			return -1;
+		}
+
+		/*--------------------------------------------------------------*/
+		/* 증거금 계산 : BM03, BM01 변경                                */
+		/*--------------------------------------------------------------*/
+		memset((char *)&nmrgn, 0x00, sizeof(Kp200AccountMarginInfo));
+		memcpy(nmrgn.bizdt,      bizdt,      8);
+		memcpy(nmrgn.brkgacntno, brkgacntno, 6);
+		memcpy(nmrgn.acntdiv,    acntdiv,    1);
+		memcpy(nmrgn.marketdiv,  "0",        1);
+
+		memset((char *)&ordinfo, 0x00, sizeof(OrderMgnInputInfo));
+		memcpy(ordinfo.procdiv, "1", 1);
+		memcpy(ordinfo.series,  series, 8);
+		memcpy(ordinfo.trd_div, trddiv, 1);
+		ordinfo.orgordno = 0;
+		ordinfo.qty      = totordqty;
+		ordinfo.prc      = applpx;
+
+		rtn = Kp200Margin_Proc(&nmrgn, &ordinfo);
+        if (rtn < 0)
+        {
+            switch (rtn)
+            {
+                case -2 : sprintf(msgcd, "90230");
+                          break;
+                case -3 : sprintf(msgcd, "50029");
+                          break;
+                case -4 : sprintf(msgcd, "90231");
+                          break;
+                case -5 : sprintf(msgcd, "20118");
+                          break;
+                default : sprintf(msgcd, "99999");
+                          break;
+            }
+
+            sprintf(msg, "%.*s", strlen(nmrgn.msg), nmrgn.msg);
+            Logout("[%s:%d] 증거금 거부[%s]", __func__, pid, msg);
+
+            return -1;
+        }
+
+        if ( prvtcorpdiv[0] == '1')
+        {
+
+            if( homefrgndiv[0] == '1')
+            {
+                  if(avaloptyn[0] == 'N')
+                  {
+                    if(futoptdiv[0] == '2' && trddiv[0] == '2' && nmrgn.opt_sell_ord_mgn > 0)
+                      {
+
+							sprintf(msgcd, "99982");
+							sprintf(msg,   "1단계 계좌로 옵션매도주문은 불가합니다.");
+							Logout ("[%s:%d] 옵션매도주문 불가 계좌[%s:%s]",
+								__func__, pid, msgcd, msg);
+							return -1;
+						}
+					}
+			}
+		}
+#ifdef _DEBUG
+		Logout("[%s:%d] TIMEGAP : 2. KOSPI 증거금 처리 후 : %f",
+			__func__, pid, GetTime2Double() - dtime);
+		dtime = GetTime2Double();
+#endif
+
+		if (acntdiv[0] == '1') {
+			/*---------------------------------------------------------------*/
+			/* 종목별 증거금 : 해당포지션의 값만 읽어온다. 잔고 Update 조심  */
+			/*---------------------------------------------------------------*/
+			if (series[0] == '1')
+			{
+				/* 선물 주문증거금 */
+				mout.futordmrgn = nmrgn.series_buy_ord_mgn;
+			}
+			else if (series[0] == '2' || series[0] == '3')
+			{
+				if (trddiv[0] == '1')
+					/* 옵션매수 주문증거금*/
+					mout.optbuyordmrgn  = nmrgn.series_buy_ord_mgn;
+				else
+					/* 옵션매도 주문증거금*/
+					mout.optsellordmrgn = nmrgn.series_sell_ord_mgn;
+			}
+			else
+			{
+				/* 스프레드 주문증거금*/
+				mout.comboordmrgn = nmrgn.series_buy_ord_mgn;
+			}
+
+			EXEC SQL
+			UPDATE  BM01_DpsPC A
+			SET     A.BrkgMrgnAmt = (SELECT B.brkgmrgnamt
+									 FROM   BM03_MRGN B
+									 WHERE  B.BizDt = A.BizDt
+									 AND    B.BrkgAcntNo = A.BrkgAcntNo),
+					A.BrkgMrgnCash= (SELECT B.brkgmrgncash
+									 FROM   BM03_MRGN B
+									 WHERE  B.BizDt = A.BizDt
+									 AND    B.BrkgAcntNo = A.BrkgAcntNo)
+			WHERE   A.BizDt      = :bizdt
+			AND     A.BrkgAcntNo = :brkgacntno;
+
+			if (sqlca.sqlcode != 0) {
+				Logout("[%s:%d] 예탁현황 증거금 Update 오류!![%s]",
+					__func__, pid, sqlca.sqlerrm.sqlerrmc); 
+				sprintf(msgcd, "99999");
+				sprintf(msg,   "예탁현황 Update 오류");
+				return -1;
+			}
+		}
+
+#ifdef _DEBUG
+		Logout("[%s:%d] TIMEGAP : 2.  증거금 처리 후 : %f",
+			__func__, pid, GetTime2Double() - dtime);
+		dtime = GetTime2Double();
+#endif
+
+
+	EXEC SQL
+	UPDATE	BM09_Bal
+	SET		KfxFutOrdMrgn     = DECODE(:instgrpcd,
+									   '004', :mout.futordmrgn,
+									   KfxFutOrdMrgn),
+			KfxOptBuyOrdMrgn  = DECODE(:instgrpcd,
+										'001', DECODE(:trddiv,
+													'1', :mout.optbuyordmrgn,
+													KfxOptBuyOrdMrgn),
+										'002', DECODE(:trddiv,
+													'1', :mout.optbuyordmrgn,
+													KfxOptBuyOrdMrgn),
+										KfxOptBuyOrdMrgn),
+			KfxOptSellOrdMrgn = DECODE(:instgrpcd,
+										'001', DECODE(:trddiv,
+													'2', :mout.optsellordmrgn,
+													KfxOptSellOrdMrgn),
+										'002', DECODE(:trddiv,
+													'2', :mout.optsellordmrgn,
+													KfxOptSellOrdMrgn),
+										KfxOptSellOrdMrgn),
+			KfxComboOrdMrgn   = DECODE(SUBSTR(:series, 1, 1),
+												  '4', :mout.comboordmrgn,
+												  KfxComboOrdMrgn)
+	WHERE	BizDt     = :bizdt
+	AND		BrkgAcntNo= :brkgacntno
+	AND		Series    = :series;
+
+	if (sqlca.sqlcode != 0 && sqlca.sqlcode != 1403) {
+		sprintf(msgcd, "99999");
+		sprintf(msg,   "전산부에 문의하세요.");
+		Logout("[%s:%d] 일자[%s] 계좌[%s] 종목[%s]",
+			__func__, pid, bizdt, brkgacntno, series);
+		Logout("[%s:%d] 잔고 Update 오류[%s]",
+			__func__, pid, sqlca.sqlerrm.sqlerrmc);
+		return -1;
+	}
+	else if (sqlca.sqlcode == 1403) {
+		/* 잔고 생성 */
+		EXEC SQL
+		INSERT INTO BM09_Bal
+		(
+			BizDt,
+			CustNo,
+			BrkgAcntNo,
+			Series,
+			CmdtCd,
+			InstGrpCd,
+			KfxFutOrdMrgn,
+			KfxOptBuyOrdMrgn,
+			KfxOptSellOrdMrgn,
+			KfxComboOrdMrgn
+		)
+		VALUES
+		(
+			:bizdt,
+			:custno,
+			:brkgacntno,
+			:series,
+			:cmdtcd,
+			:instgrpcd,
+			:mout.futordmrgn,
+			:mout.optbuyordmrgn,
+			:mout.optsellordmrgn,
+			:mout.comboordmrgn
+		);
+
+		if (sqlca.sqlcode != 0) {
+			Logout("[%s:%d] 일자[%s] 계좌[%s] 종목[%s]",
+				__func__, pid, bizdt, brkgacntno, series);
+			Logout("[%s:%d] 잔고 Insert 오류[%s]",
+				__func__, pid, sqlca.sqlerrm.sqlerrmc);
+			sprintf(msgcd, "99999");
+			sprintf(msg,   "잔고 입력 오류");
+			return -1;
+		}
+	}
+
+#ifdef _DEBUG
+	Logout("[%s:%d] TIMEGAP : 3. 잔고정리처리 후 : %f",
+		__func__, pid, GetTime2Double() - dtime);
+
+	Logout ("[%s:%d] << 반복주문 증거금가능수량 계산 완료", __func__, pid);
+#endif
+
+	return 1;
+}

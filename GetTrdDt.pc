@@ -1,0 +1,38 @@
+/*
+ * 설명   :
+ * NAME   : GetTrddt.pc
+ * DATE   : 2004년 4월 28일 수요일 오후 12시 56분 48초
+ * By     : [이름쓰기] 
+ * Remark : 
+ */
+#include <stdio.h>
+#include <stdlib.h>
+
+exec sql include sqlca;
+
+/*******************************************************************************
+ * 설명      :
+ * Prototype :
+ * Arguments :
+ * Return    :
+ ******************************************************************************/
+int GetTrdDt(trddt)
+char *trddt;
+{
+	char dt[9];
+
+	exec sql
+	select  bizdt
+	into    :dt
+	from    bz04_bizdt
+	where   mktcd = '99';
+
+
+	if (sqlca.sqlcode != 0) {
+		Logout("일자 구하기 오류[%s]", sqlca.sqlerrm.sqlerrmc);
+		return -1;
+	}
+
+	strcpy(trddt, dt);
+	return 1;
+}
