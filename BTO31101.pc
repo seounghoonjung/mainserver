@@ -1,5 +1,5 @@
 /*
-step 1
+web site modify
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,7 +23,7 @@ extern double GetTime2Double();
 char *qodnm31101 = "BTO31101";
 
 /*******************************************************************************
- * ¼³¸í      :
+ * ì„¤ëª…      :
  * Prototype :
  * Arguments :
  * Return    :
@@ -37,18 +37,18 @@ int BTO31101(int fd, void *arg, int len)
 	OUT_MSG      out;
 	MIS_EXEC_DATA     misdata;
 
-	/* º¹¼ö°èÁÂ±×·ìÁÖ¹®¿ë */
+	/* ë³µìˆ˜ê³„ì¢Œê·¸ë£¹ì£¼ë¬¸ìš© */
 	char         grpnm    [31];
 	char         grppswd  [9];
-	char         brkgacntno[7];	    /* À§Å¹°èÁÂ¹øÈ£ */
-	char         trddiv   [2];		/* ¸Å¸Å±¸ºĞ       */
-	int          ordqty;			/* ÁÖ¹®¼ö·®       */
-	int          grpid = 0;    		/* ±×·ì ID        */
+	char         brkgacntno[7];	    /* ìœ„íƒê³„ì¢Œë²ˆí˜¸ */
+	char         trddiv   [2];		/* ë§¤ë§¤êµ¬ë¶„       */
+	int          ordqty;			/* ì£¼ë¬¸ìˆ˜ëŸ‰       */
+	int          grpid = 0;    		/* ê·¸ë£¹ ID        */
 	char         cgrpid[4];
     char         procstts[2];
 
-	char         meddiv   [2];		/* ¸ÅÃ¼±¸ºĞ */
-	char         ordfrm   [2]; 		/* ÁÖ¹®ÇüÅÂ */
+	char         meddiv   [2];		/* ë§¤ì²´êµ¬ë¶„ */
+	char         ordfrm   [2]; 		/* ì£¼ë¬¸í˜•íƒœ */
 	char         msgcd    [6];
 	char         msg      [81];
 	char         tmp      [50];
@@ -82,10 +82,10 @@ int BTO31101(int fd, void *arg, int len)
 	Logout("[%s] input hd   id       [%.8s]",  qodnm31101, hd->id);
 	Logout("[%s] input hd   empno    [%.8s]",  qodnm31101, hd->empno);
 	Logout("[%s] input hd   method   [%.1s]",  qodnm31101, hd->method);
-	Logout("[%s] input data ÁÖ¹®°Ç¼ö [%.3s]",  qodnm31101, ordhd->ordcnt);
-	Logout("[%s] input data ¸ÅÃ¼±¸ºĞ [%.1s]",  qodnm31101, ordhd->meddiv);
-	Logout("[%s] input data ÁÖ¹®±¸ºĞ [%.1s]",  qodnm31101, ordhd->orddiv);
-	Logout("[%s] input data ÁÖ¹®ÇüÅÂ [%.1s]",  qodnm31101, ordhd->ordfrm);
+	Logout("[%s] input data ì£¼ë¬¸ê±´ìˆ˜ [%.3s]",  qodnm31101, ordhd->ordcnt);
+	Logout("[%s] input data ë§¤ì²´êµ¬ë¶„ [%.1s]",  qodnm31101, ordhd->meddiv);
+	Logout("[%s] input data ì£¼ë¬¸êµ¬ë¶„ [%.1s]",  qodnm31101, ordhd->orddiv);
+	Logout("[%s] input data ì£¼ë¬¸í˜•íƒœ [%.1s]",  qodnm31101, ordhd->ordfrm);
 	Logout("[%s] input data GrpNm    [%.30s]", qodnm31101, ordhd->grpnm);
 	Logout("[%s] input data UserID   [%.8s]",  qodnm31101, hd->id);
 	Logout("[%s] input data UserIP   [%.15s]", qodnm31101, hd->ipaddr);
@@ -93,7 +93,7 @@ int BTO31101(int fd, void *arg, int len)
 
 	sprintf(meddiv, "%.1s", ordhd->meddiv);
 
-	/* ÀÀ´ä ¹öÆÛ ÇÒ´ç - °³º° ÀÀ´äÃ³¸® */
+	/* ì‘ë‹µ ë²„í¼ í• ë‹¹ - ê°œë³„ ì‘ë‹µì²˜ë¦¬ */
 	sendbuff = (char *)malloc(sizeof(PACKET_HD) + 3 + sizeof(OUT_MSG) * ordcnt);
 
 	memset(sendbuff,      0x20, sizeof(sendbuff));
@@ -105,7 +105,7 @@ int BTO31101(int fd, void *arg, int len)
 	memcpy(sendbuff+outpos, ordhd->ordcnt, 3);
 	outpos += 3;
 
-	/* ID, IP, »ç¹øÀº ¹İº¹¿¡ °ü°è¾øÀÌ ¿©±â¼­ ÇÑ¹ø¸¸ ¼³Á¤ */
+	/* ID, IP, ì‚¬ë²ˆì€ ë°˜ë³µì— ê´€ê³„ì—†ì´ ì—¬ê¸°ì„œ í•œë²ˆë§Œ ì„¤ì • */
 	sprintf(inbk.ordinputid, "%.8s",  hd->id);
 	sprintf(inbk.ordinputip, "%.15s", hd->ipaddr);
 	sprintf(inbk.oppsnempno, "%.8s",  hd->empno);
@@ -113,7 +113,7 @@ int BTO31101(int fd, void *arg, int len)
 
 	if (ordcnt > MAX_ORDCNT) {
 		sprintf(msgcd, "50658");
-		sprintf(msg,   "ÁÖ¹®È½¼ö ÇÑµµ ÃÊ°ú, ÀÏºÎÃ³¸®¸¦ ÇÏ¼¼¿ä.");
+		sprintf(msg,   "ì£¼ë¬¸íšŸìˆ˜ í•œë„ ì´ˆê³¼, ì¼ë¶€ì²˜ë¦¬ë¥¼ í•˜ì„¸ìš”.");
 		OrdMsgProc(msg, msgcd, meddiv, &out);
 		EXEC SQL ROLLBACK WORK;
 		BscOrdErrProc((char *)arg, len, (char *)&out, 0);
@@ -122,16 +122,16 @@ int BTO31101(int fd, void *arg, int len)
 		flag = 0;
 	}
 
-	/* SCALE, ¹İº¹ : ±×·ìÁÖ¹®ÀÎ°æ¿ì ±×·ìID »ı¼º */
+	/* SCALE, ë°˜ë³µ : ê·¸ë£¹ì£¼ë¬¸ì¸ê²½ìš° ê·¸ë£¹ID ìƒì„± */
 	if (ordfrm[0] == '3' || ordfrm[0] == '4') {
 
-		/* ±×·ì¹øÈ£ Ã¤¹ø */
-		if (SeqNoCreate(trddt,			/* ÀÏÀÚ                I*/
-						"G",		    /* Ã¤¹ø±¸ºĞ - ÁÖ¹®ÇüÅÂ I*/
-						"GroupNo",		/* Ã¤¹ø¸í   - ÀÇ¹Ì¾øÀ½ I*/
-						&grpid,			/* ±×·ì¹øÈ£            O*/
-						msgcd,			/* ¿¡·¯ÄÚµå            O*/
-						msg				/* ¿¡·¯¸Ş¼¼Áö          O*/
+		/* ê·¸ë£¹ë²ˆí˜¸ ì±„ë²ˆ */
+		if (SeqNoCreate(trddt,			/* ì¼ì                I*/
+						"G",		    /* ì±„ë²ˆêµ¬ë¶„ - ì£¼ë¬¸í˜•íƒœ I*/
+						"GroupNo",		/* ì±„ë²ˆëª…   - ì˜ë¯¸ì—†ìŒ I*/
+						&grpid,			/* ê·¸ë£¹ë²ˆí˜¸            O*/
+						msgcd,			/* ì—ëŸ¬ì½”ë“œ            O*/
+						msg				/* ì—ëŸ¬ë©”ì„¸ì§€          O*/
 						) < 0)
 		{
 			Logout("[%s] msgcd[%s] msg[%s]", qodnm31101, msgcd, msg);
@@ -148,7 +148,7 @@ int BTO31101(int fd, void *arg, int len)
 		EXEC SQL COMMIT WORK;
 
 #ifdef _DEBUG
-		Logout("[%s] ±×·ìID[%d]", qodnm31101, grpid);
+		Logout("[%s] ê·¸ë£¹ID[%d]", qodnm31101, grpid);
 #endif
 
 	}
@@ -156,13 +156,13 @@ int BTO31101(int fd, void *arg, int len)
 		sprintf(grpnm,   "%.30s", ordhd->grpnm);
 		sprintf(grppswd, "%.8s",  ordhd->grppswd);
 
-		/* º¹¼ö°èÁÂÁÖ¹® ±×·ìºñ¹Ğ¹øÈ£ Check */
+		/* ë³µìˆ˜ê³„ì¢Œì£¼ë¬¸ ê·¸ë£¹ë¹„ë°€ë²ˆí˜¸ Check */
 		if (ChkPlrAcntGrpPswd(
 						inbk.ordinputid,	/* USER ID             I*/
-						grpnm,				/* ±×·ì¸í              I*/
-						grppswd,			/* ±×·ìID              I*/
-						msgcd,				/* ¿¡·¯ÄÚµå            O*/
-						msg					/* ¿¡·¯¸Ş¼¼Áö          O*/
+						grpnm,				/* ê·¸ë£¹ëª…              I*/
+						grppswd,			/* ê·¸ë£¹ID              I*/
+						msgcd,				/* ì—ëŸ¬ì½”ë“œ            O*/
+						msg					/* ì—ëŸ¬ë©”ì„¸ì§€          O*/
 						) < 0)
 		{
 			Logout("[%s] msgcd[%s] msg[%s]", qodnm31101, msgcd, msg);
@@ -176,15 +176,15 @@ int BTO31101(int fd, void *arg, int len)
 			EXEC SQL COMMIT WORK;
 		}
 
-		/* º¹¼ö°èÁÂÁÖ¹® ±×·ì¹øÈ£ Ã¤¹ø */
+		/* ë³µìˆ˜ê³„ì¢Œì£¼ë¬¸ ê·¸ë£¹ë²ˆí˜¸ ì±„ë²ˆ */
 		if (flag == 1) {
 			StrTrim (tmp, grpnm, strlen(grpnm));
-			if (SeqNoCreate(trddt,			/* ÀÏÀÚ        I*/
-							"P",		    /* Ã¤¹ø±¸ºĞ    I*/
-							tmp,			/* Ã¤¹ø¸í      I*/
-							&grpid,			/* ±×·ì¹øÈ£    O*/
-							msgcd,			/* ¿¡·¯ÄÚµå    O*/
-							msg				/* ¿¡·¯¸Ş¼¼Áö  O*/
+			if (SeqNoCreate(trddt,			/* ì¼ì        I*/
+							"P",		    /* ì±„ë²ˆêµ¬ë¶„    I*/
+							tmp,			/* ì±„ë²ˆëª…      I*/
+							&grpid,			/* ê·¸ë£¹ë²ˆí˜¸    O*/
+							msgcd,			/* ì—ëŸ¬ì½”ë“œ    O*/
+							msg				/* ì—ëŸ¬ë©”ì„¸ì§€  O*/
 							) < 0)
 			{
 				Logout("[%s] msgcd[%s] msg[%s]", qodnm31101, msgcd, msg);
@@ -200,21 +200,21 @@ int BTO31101(int fd, void *arg, int len)
 			EXEC SQL COMMIT WORK;
 
 #ifdef _DEBUG
-			Logout("[%s] º¹¼ö°èÁÂÁÖ¹® ±×·ìID[%d]", qodnm31101, grpid);
+			Logout("[%s] ë³µìˆ˜ê³„ì¢Œì£¼ë¬¸ ê·¸ë£¹ID[%d]", qodnm31101, grpid);
 #endif
 
 		}
 	}
-	/* Â÷ÀÍÁÖ¹®  : Â÷ÀÍÁÖ¹®Àº 1°Ç¸¸ ¿Ã¶ó¿Â´Ù. ¿©·¯°ÇÀº ¾ø´Ù. */
+	/* ì°¨ìµì£¼ë¬¸  : ì°¨ìµì£¼ë¬¸ì€ 1ê±´ë§Œ ì˜¬ë¼ì˜¨ë‹¤. ì—¬ëŸ¬ê±´ì€ ì—†ë‹¤. */
 	else if (ordfrm[0] == 'b') {
 		sprintf(grpnm,   "%.30s", ordhd->grpnm);
-		if (memcmp(grpnm, "<<Àü·«¸íÀÓÀÇ»ı¼º>>", 18) == 0) {
+		if (memcmp(grpnm, "<<ì „ëµëª…ì„ì˜ìƒì„±>>", 18) == 0) {
 			sprintf(brkgacntno, "%.6s", in.ordin.brkgacntno);
 			ordqty = Str2Int(in.ordin.ordqty, 8);
 			if (StgCreate(brkgacntno, ordqty) < 0)
 			{
 				sprintf(msgcd, "50704");
-				sprintf(msg,   "Àü·«¸í ÀÓÀÇ»ı¼º½Ã ¿À·ù°¡ ¹ß»ıÇÏ¿´½À´Ï´Ù.");
+				sprintf(msg,   "ì „ëµëª… ì„ì˜ìƒì„±ì‹œ ì˜¤ë¥˜ê°€ ë°œìƒí•˜ì˜€ìŠµë‹ˆë‹¤.");
 				Logout("[%s] msgcd[%s] msg[%s]", qodnm31101, msgcd, msg);
 				OrdMsgProc(msg, msgcd, meddiv, &out);
 				Logout("[%s] output[%.*s]",
@@ -228,7 +228,7 @@ int BTO31101(int fd, void *arg, int len)
 		}
 	}
 
-	/* ¹İº¹ Ã³¸® */
+	/* ë°˜ë³µ ì²˜ë¦¬ */
 	pos = sizeof(PACKET_HD) + sizeof(ORDER_IN_HD);
 
 	for (i = 0; i < ordcnt && flag == 1; i++) {
@@ -237,16 +237,16 @@ int BTO31101(int fd, void *arg, int len)
 		memcpy((char *)&in+sizeof(ORDER_IN_HD), (char *)arg+pos,
 												sizeof(ORDER_IN));
 
-		/* ÀÏ¹İÁÖ¹®Àº grpid °¡ ÀÇ¹Ì°¡ ¾ø´Ù */
+		/* ì¼ë°˜ì£¼ë¬¸ì€ grpid ê°€ ì˜ë¯¸ê°€ ì—†ë‹¤ */
 		sprintf(cgrpid, "%03d", grpid);
 		memcpy(in.ordin.grpid, cgrpid, 3);
 
 
 		/*-------------------------------------------------------------------*/
-		/* 2. ±âº»Á¤º¸ Ã¤¿ì±â                                                */
+		/* 2. ê¸°ë³¸ì •ë³´ ì±„ìš°ê¸°                                                */
 		/*-------------------------------------------------------------------*/
 		if (OrdMvIn2Inbk(in, &inbk, msgcd, msg) < 0) {
-			Logout("[%s] ±âº»Á¤º¸ Check Error : msgcd[%s] msg[%s]",
+			Logout("[%s] ê¸°ë³¸ì •ë³´ Check Error : msgcd[%s] msg[%s]",
 				qodnm31101, msgcd, msg);
 			OrdMsgProc(msg, msgcd, meddiv, &out);
 			Logout("[%s] output[%.*s]", qodnm31101, sizeof(OUT_MSG), out);
@@ -255,7 +255,7 @@ int BTO31101(int fd, void *arg, int len)
 			EXEC SQL COMMIT WORK;
 		}
 
-		/* À§ ±âº»Á¤º¸ Ã¤¿ì±â ¿À·ù È®ÀÎ : ¿À·ù¸é ´ÙÀ½ ÁÖ¹®À¸·Î */
+		/* ìœ„ ê¸°ë³¸ì •ë³´ ì±„ìš°ê¸° ì˜¤ë¥˜ í™•ì¸ : ì˜¤ë¥˜ë©´ ë‹¤ìŒ ì£¼ë¬¸ìœ¼ë¡œ */
 		if (ordflag == 1) {
 			/*---------------------------------------------------------------*/
 			/* 3. Data Process                                               */
@@ -270,10 +270,10 @@ int BTO31101(int fd, void *arg, int len)
 					*hd->flag = ERRORSET_FG;
 			}
 			else {
-                /* 2006.01.23 ¹éµÎÇö */
+                /* 2006.01.23 ë°±ë‘í˜„ */
                 if  (ordhd->clientid[0] != ' ')
                 {
-                    /* 2006.01.23 ¹éµÎÇö, BL06 Å×ÀÌºí¿¡ ClientÀü¼Û KEY field Ãß°¡ ÀÔ·Â */
+                    /* 2006.01.23 ë°±ë‘í˜„, BL06 í…Œì´ë¸”ì— Clientì „ì†¡ KEY field ì¶”ê°€ ì…ë ¥ */
                     sprintf(clntid,   "%.7s", ordhd->clientid);
 
                     EXEC SQL
@@ -288,37 +288,37 @@ int BTO31101(int fd, void *arg, int len)
 				EXEC SQL COMMIT WORK;
 
 				/* MIS Data Send */
-				misdata.ordexecdiv[0] = '1'; /* ÁÖ¹® */
+				misdata.ordexecdiv[0] = '1'; /* ì£¼ë¬¸ */
 				memset (misdata.bizdt, 0x00, sizeof(misdata.bizdt)); 
 				memcpy (misdata.brchno,    inbk.brchno, 3);
 				sprintf(misdata.ordno,     "%07d",       inbk.ordno);
 				memcpy(misdata.execno,    "0000",       4);
 				if (MISExec(misdata, MIS_EXEC_DATA_SIZE) < 0) {
-					Logout("[%s] ÁÖ¹® : MISExec Àü¼Û ¿À·ù!!", __FILE__);
+					Logout("[%s] ì£¼ë¬¸ : MISExec ì „ì†¡ ì˜¤ë¥˜!!", __FILE__);
 				}
 #ifdef _DEBUG
-				Logout("[%s] ÁÖ¹® : MISExec Àü¼Û ¿Ï·á!!", __FILE__);
+				Logout("[%s] ì£¼ë¬¸ : MISExec ì „ì†¡ ì™„ë£Œ!!", __FILE__);
 #endif
 			}
 		}
 
-		/* º¹¼ö°èÁÂ ÁÖ¹®´©Àû¼ö·® Update : rtn ÀÌ 0 ÀÌ¸é Ã³¸®ÇÏÁö ¾Ê´Â´Ù. */
+		/* ë³µìˆ˜ê³„ì¢Œ ì£¼ë¬¸ëˆ„ì ìˆ˜ëŸ‰ Update : rtn ì´ 0 ì´ë©´ ì²˜ë¦¬í•˜ì§€ ì•ŠëŠ”ë‹¤. */
 		if (ordfrm[0] == '5' && rtn == 1) {
 			sprintf(grpnm,     "%.30s",in.ordhd.grpnm);
 			sprintf(brkgacntno,"%.6s", in.ordin.brkgacntno);
 			sprintf(trddiv,    "%.1s", in.ordin.trddiv);
 			ordqty = Str2Int(in.ordin.ordqty, 8);
 
-			/* ÁÖ¹®¼ö·® ¸¸Å­ ÁÖ¹®´©Àû¼ö·®À» Áõ°¡½ÃÅ²´Ù */
+			/* ì£¼ë¬¸ìˆ˜ëŸ‰ ë§Œí¼ ì£¼ë¬¸ëˆ„ì ìˆ˜ëŸ‰ì„ ì¦ê°€ì‹œí‚¨ë‹¤ */
 			if (UpdatePlrAcntOrdQty(inbk.ordinputid,	/* User ID        I*/
-									grpnm,				/* ±×·ì¸í         I*/
-									brkgacntno,			/* À§Å¹°èÁÂ¹øÈ£   I*/
-									trddiv,				/* ¸Å¸Å±¸ºĞ       I*/
-									ordqty,				/* ÁÖ¹®¼ö·®       I*/
-									msgcd,				/* ¸Ş¼¼ÁöÄÚµå     I*/
-									msg					/* ¸Ş¼¼Áö         I*/
+									grpnm,				/* ê·¸ë£¹ëª…         I*/
+									brkgacntno,			/* ìœ„íƒê³„ì¢Œë²ˆí˜¸   I*/
+									trddiv,				/* ë§¤ë§¤êµ¬ë¶„       I*/
+									ordqty,				/* ì£¼ë¬¸ìˆ˜ëŸ‰       I*/
+									msgcd,				/* ë©”ì„¸ì§€ì½”ë“œ     I*/
+									msg					/* ë©”ì„¸ì§€         I*/
 									) < 0) {
-				Logout("[%s] º¹¼öÁÖ¹®¼ö·® ´©Àû¿À·ù[%s:%s]",
+				Logout("[%s] ë³µìˆ˜ì£¼ë¬¸ìˆ˜ëŸ‰ ëˆ„ì ì˜¤ë¥˜[%s:%s]",
 					qodnm31101, msgcd, msg);
 			}
 			EXEC SQL COMMIT WORK;
@@ -351,12 +351,12 @@ int BTO31101(int fd, void *arg, int len)
 	}
 
 #ifdef _DEBUG
-        Logout("[%s:%d] TIMEGAP : ÃÑ ÁÖ¹®Ã³¸® ½Ã°£ %f",
+        Logout("[%s:%d] TIMEGAP : ì´ ì£¼ë¬¸ì²˜ë¦¬ ì‹œê°„ %f",
             qodnm31101, pid, GetTime2Double() - dtime);
 #endif
 
 	if (ordcnt == 1) {
-		/* Message Àü¼Û */
+		/* Message ì „ì†¡ */
 		*hd->cmd = 'M';
 		memcpy(sendbuff, hd, sizeof(PACKET_HD));
 		memcpy(&sendbuff[sizeof(PACKET_HD)], out.msg, 80);
@@ -367,28 +367,28 @@ int BTO31101(int fd, void *arg, int len)
 	}
 	else {
 		*hd->cmd = 'M';
-		/* ÀüÃ¼°ÅºÎÃ³¸® */
+		/* ì „ì²´ê±°ë¶€ì²˜ë¦¬ */
 		if (proccnt == 0) {
 			memcpy(sendbuff, hd, sizeof(PACKET_HD));
 			memcpy(&sendbuff[sizeof(PACKET_HD)], out.msg, 80);
 			rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD)+80);
 		}
-		/* ÀüÃ¼Ã³¸® */
+		/* ì „ì²´ì²˜ë¦¬ */
 		else if (proccnt == ordcnt) {
             if  (meddiv[0] == 'G')
                 sprintf(out.msg, "%-80.80s", "Order received.");
             else
-                sprintf(out.msg, "%-80.80s", "Á¤»óÁÖ¹® Ã³¸®µÇ¾ú½À´Ï´Ù.");
+                sprintf(out.msg, "%-80.80s", "ì •ìƒì£¼ë¬¸ ì²˜ë¦¬ë˜ì—ˆìŠµë‹ˆë‹¤.");
 			memcpy(sendbuff, hd, sizeof(PACKET_HD));
 			memcpy(&sendbuff[sizeof(PACKET_HD)], out.msg, 80);
 			rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD)+80);
 		}
-		/* ÀÏºÎÃ³¸® */
+		/* ì¼ë¶€ì²˜ë¦¬ */
 		else {
             if  (meddiv[0] == 'G')
                 sprintf(out.msg, "%-80.80s", "Partial orders were rejected.");
             else
-                sprintf(out.msg, "%-80.80s", "ÀÏºÎÁÖ¹® °ÅºÎ Ã³¸®µÇ¾ú½À´Ï´Ù.");
+                sprintf(out.msg, "%-80.80s", "ì¼ë¶€ì£¼ë¬¸ ê±°ë¶€ ì²˜ë¦¬ë˜ì—ˆìŠµë‹ˆë‹¤.");
 			memcpy(sendbuff, hd, sizeof(PACKET_HD));
 			memcpy(&sendbuff[sizeof(PACKET_HD)], out.msg, 80);
 			rtn = WriteStream2(fd, sendbuff, sizeof(PACKET_HD)+80);
@@ -407,7 +407,7 @@ int BTO31101(int fd, void *arg, int len)
 		Logout("[%s] output data send error!![%d]", qodnm31101, errno);
 	}
     
-	/* ÇÒ´ç ÇØÁ¦ */
+	/* í• ë‹¹ í•´ì œ */
 	free(sendbuff);
 
 	return 1;
